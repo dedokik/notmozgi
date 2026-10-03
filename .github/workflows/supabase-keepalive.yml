@@ -1,0 +1,32 @@
+name: Supabase keep-alive
+
+on:
+  schedule:
+    # каждые 2 дня в 08:00 UTC — чтобы free-tier не уходил в паузу (пауза после ~7 дней без API-запросов)
+    - cron: '0 8 */2 * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::Нет секретов SUPABASE_URL / SUPABASE_ANON_KEY (Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
+          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "$SUPABASE_URL/rest/v1/notes?select=id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          echo "Supabase HTTP: $code"
+          if [ "$code" = "200" ] || [ "$code" = "206" ]; then
+            echo "OK — проект живой"
+          else
+            echo "::error::Неожиданный статус $code"
+            exit 1
+          fi
