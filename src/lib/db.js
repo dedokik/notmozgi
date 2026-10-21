@@ -1,9 +1,10 @@
+cat > src/lib/db.js << 'EOF'
 import Dexie from 'dexie'
 
 export const DIMENSIONS = [
-  { id: 'study', name: 'Учёба', color: '#8b5cf6' },
-  { id: 'personal', name: 'Личное', color: '#10b981' },
-  { id: 'projects', name: 'Проекты', color: '#f59e0b' },
+  { id: 'ya', name: 'Я', color: '#3b82f6' },
+  { id: 'study', name: 'Учеба', color: '#8b5cf6' },
+  { id: 'work', name: 'Работа', color: '#f59e0b' },
 ]
 
 export const MAP_W = 100
@@ -14,7 +15,6 @@ db.version(1).stores({
   notes: '++id, dimension, updatedAt',
   settings: 'key',
 })
-// v2: ручные связи, чанки плана, пиксели карты
 db.version(2).stores({
   notes: '++id, dimension, updatedAt',
   settings: 'key',
@@ -22,7 +22,6 @@ db.version(2).stores({
   chunks: '++id, noteId, date, done',
   pixels: '[x+y], noteId, openedAt',
 })
-// v3: измерения стали динамическими (свои названия и цвета)
 db.version(3).stores({
   notes: '++id, dimension, updatedAt',
   settings: 'key',
@@ -31,7 +30,6 @@ db.version(3).stores({
   pixels: '[x+y], noteId, openedAt',
   dimensions: 'id',
 })
-// v4: события календаря (день + подпись, отдельно от заметок; deleted = soft-delete для синка)
 db.version(4).stores({
   notes: '++id, dimension, updatedAt',
   settings: 'key',
@@ -56,21 +54,21 @@ export async function seedIfEmpty() {
     {
       title: 'Добро пожаловать',
       body: '# Привет\n\nЭто Not: заметки + календарь + граф + карта.\n\n- [ ] Создать заметку в измерении Учёба\n- [ ] Написать `дедлайн: 30.09` и `оценка: 6ч` в тексте\n- [x] Открыть календарь\n\nСвязь с релизом: [[MVP релиз]]\n\nдедлайн: 30.09',
-      dimension: 'study',
+      dimension: 'ya',
       estimateHours: 6,
       updatedAt: now,
     },
     {
       title: 'Купить продукты',
       body: '## Список\n\n- [ ] Молоко\n- [ ] Хлеб\n\nдедлайн: 26.09',
-      dimension: 'personal',
+      dimension: 'study',
       estimateHours: 1,
       updatedAt: now,
     },
     {
       title: 'MVP релиз',
       body: '# Проекты\n\nДоделать каркас и показать на телефоне по Wi-Fi.\n\n**дедлайн: 28.09**',
-      dimension: 'projects',
+      dimension: 'work',
       estimateHours: 4,
       updatedAt: now,
     },
@@ -86,7 +84,7 @@ export async function setSetting(key, value) {
   await db.settings.put({ key, value })
 }
 
-// --- пиксели: n-й открытый пиксель (row-major порядок) ---
 export function pixelCoord(n) {
   return { x: n % MAP_W, y: Math.floor(n / MAP_W) % MAP_H }
 }
+EOF
