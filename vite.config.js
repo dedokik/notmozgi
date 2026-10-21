@@ -15,8 +15,8 @@ export default defineConfig({
       manifest: {
         name: 'NotMozgi',
         short_name: 'NotMozgi',
-        theme_color: '#121212',
-        background_color: '#121212',
+        theme_color: '#0d0d10',
+        background_color: '#0d0d10',
         display: 'standalone',
         icons: [
           { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },

@@ -43,3 +43,36 @@ export async function checkDeadlines(notes) {
   }
   return n
 }
+
+// Напоминания о событиях календаря (сегодня / завтра)
+export async function checkCalendarEvents(events) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return 0
+  const done = await getSetting('notifiedEvents', {})
+  const todayKey = new Date().toDateString()
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1)
+  const tomorrowKey = tomorrow.toDateString()
+  let n = 0
+  for (const e of events || []) {
+    if (e.deleted) continue
+    const key = `${e.id}:${e.date}`
+    if (done[key] === todayKey) continue
+    const isToday = e.date === todayKey
+    const isTomorrow = e.date === tomorrowKey
+    if (!isToday && !isTomorrow) continue
+    const title = isToday ? `Событие сегодня: ${e.title}` : `Событие завтра: ${e.title}`
+    try {
+      new Notification(title, { body: 'Календарь · ' + e.title, tag: key })
+      done[key] = todayKey
+      n++
+    } catch { /* заблокировано браузером */ }
+  }
+  const keys = Object.keys(done)
+  if (keys.length > 100) {
+    const fresh = {}
+    for (const k of keys.slice(-100)) fresh[k] = done[k]
+    await setSetting('notifiedEvents', fresh)
+  } else if (n) {
+    await setSetting('notifiedEvents', done)
+  }
+  return n
+}

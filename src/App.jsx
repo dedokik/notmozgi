@@ -9,7 +9,7 @@ import { cloudEnabled, syncNow, cloud, cleanupDuplicates } from './lib/supabase.
 import GraphView from './components/GraphView.jsx'
 import MapView from './components/MapView.jsx'
 import SyncDiag from './components/SyncDiag.jsx'
-import { checkDeadlines } from './lib/notify.js'
+import { checkDeadlines, checkCalendarEvents } from './lib/notify.js'
 
 function getTasks(body) {
   const lines = (body || '').split('\n')
@@ -72,6 +72,8 @@ export default function App() {
   const [notifState, setNotifState] = useState(() => (typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'))
   const notesRef = useRef([])
   notesRef.current = notes
+  const eventsRef = useRef([])
+  eventsRef.current = events
   const markSynced = () => setLastSyncAt(new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }))
   const enableNotif = async () => {
     if (typeof Notification === 'undefined') return
@@ -174,7 +176,10 @@ export default function App() {
 
   // напоминания о дедлайнах: раз в минуту + через 5 сек после старта
   useEffect(() => {
-    const tick = () => { try { checkDeadlines(notesRef.current) } catch { /* ignore */ } }
+    const tick = async () => {
+      try { await checkDeadlines(notesRef.current) } catch { /* ignore */ }
+      try { await checkCalendarEvents(eventsRef.current) } catch { /* ignore */ }
+    }
     const id = setInterval(tick, 60000)
     const t = setTimeout(tick, 5000)
     return () => { clearInterval(id); clearTimeout(t) }
