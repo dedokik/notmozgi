@@ -1,4 +1,3 @@
-cat > src/lib/db.js << 'EOF'
 import Dexie from 'dexie'
 
 export const DIMENSIONS = [
@@ -87,4 +86,3 @@ export async function setSetting(key, value) {
 export function pixelCoord(n) {
   return { x: n % MAP_W, y: Math.floor(n / MAP_W) % MAP_H }
 }
-EOF
