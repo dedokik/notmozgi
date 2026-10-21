@@ -11,5 +11,60 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <!--
+      Защита от «белого экрана»: если закэшированная версия index.html
+      ссылается на уже удалённые ассеты (старый service worker),
+      сервер отдаёт вместо .js HTML-заглушку и приложение не стартует.
+      Показываем понятное сообщение и кнопку полного сброса кэша.
+    -->
+    <script>
+      (function () {
+        var shown = false
+        function fail() {
+          if (shown) return
+          shown = true
+          var root = document.getElementById('root')
+          if (root && root.children.length) return
+          var box = document.createElement('div')
+          box.setAttribute('style', [
+            'position:fixed', 'inset:0', 'z-index:9999', 'display:flex',
+            'flex-direction:column', 'gap:12px', 'align-items:center', 'justify-content:center',
+            'background:#0d0d10', 'color:#e8e8ea', 'font:15px system-ui,sans-serif',
+            'text-align:center', 'padding:24px'
+          ].join(';'))
+          box.innerHTML =
+            '<div style="font-size:20px;font-weight:700">Не удалось загрузить приложение</div>' +
+            '<div style="opacity:.7;max-width:420px">Версия в кэше устарела. Нажми кнопку — ' +
+            'перезагрузим и очистим кэш.</div>' +
+            '<button id="nm-reload" style="margin-top:8px;padding:12px 20px;border-radius:14px;' +
+            'border:0;background:#3b82f6;color:#fff;font:600 15px system-ui;cursor:pointer">' +
+            'Перезагрузить</button>'
+          document.body.appendChild(box)
+          var btn = document.getElementById('nm-reload')
+          if (btn) btn.onclick = function () {
+            try {
+              if (navigator.serviceWorker) {
+                navigator.serviceWorker.getRegistrations().then(function (regs) {
+                  regs.forEach(function (r) { r.unregister() })
+                })
+              }
+              if (window.caches) {
+                caches.keys().then(function (keys) {
+                  keys.forEach(function (k) { caches.delete(k) })
+                })
+              }
+            } catch (e) { /* ignore */ }
+            setTimeout(function () { location.reload(true) }, 400)
+          }
+        }
+        window.addEventListener('error', function (e) {
+          if (e && e.target && e.target.tagName === 'SCRIPT') fail()
+        }, true)
+        setTimeout(function () {
+          var root = document.getElementById('root')
+          if (!root || !root.children.length) fail()
+        }, 4000)
+      })()
+    </script>
   </body>
 </html>
