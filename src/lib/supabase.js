@@ -1,7 +1,10 @@
 // Supabase Cloud + Offline: двухсторонний синк заметок/связей, чанки/пиксели — push.
 // Без VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY работает чисто локально (Dexie).
 import { createClient } from '@supabase/supabase-js'
-import { db, getSetting, setSetting } from './db.js'
+import { db, getSetting, setSetting, DIMENSIONS as BASE_DIMS } from './db.js'
+
+// id базовых измерений — только они допустимы к синку
+const BASE_DIM_IDS = BASE_DIMS.map((d) => d.id)
 
 const URL = import.meta.env.VITE_SUPABASE_URL
 const KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
@@ -185,6 +188,22 @@ async function pushDimensions(sb) {
   }
 }
 
+// Подчистка измерений в облаке. ВАЖНО: вызывается ПОСЛЕ pushNotes, потому что
+// notes.dimension — внешний ключ на dimensions(id) без ON DELETE CASCADE:
+// сначала переносим ссылки заметок на базовое измерение, потом удаляем лишнее.
+async function pruneCloudDimensions(sb) {
+  const { data: cloud } = await sb.from('dimensions').select('id')
+  const extra = (cloud || []).filter((r) => !BASE_DIM_IDS.includes(r.id))
+  if (!extra.length) return 0
+  const fallback = BASE_DIM_IDS[0] // «Я»
+  for (const r of extra) {
+    await sb.from('notes').update({ dimension: fallback }).eq('dimension', r.id)
+    await sb.from('events').update({ dimension: fallback }).eq('dimension', r.id)
+    await sb.from('dimensions').delete().eq('id', r.id)
+  }
+  return extra.length
+}
+
 async function pushRest(sb) {
   // связи/чанки/пиксели: wholesale replace (один пользователь)
   const noteMap = await getSetting('cloudIds', {})
@@ -217,8 +236,10 @@ async function pullRest(sb) {
   }
   let links = 0, chunks = 0
   // измерения тянем ПЕРВЫМИ — иначе заметки с кастомным измерением нечем показать
+  // Только базовые три: остальные в облаке считаются удалёнными и не возвращаются.
   const { data: rd } = await sb.from('dimensions').select('*')
   for (const r of rd || []) {
+    if (!BASE_DIM_IDS.includes(r.id)) continue
     const ex = await db.dimensions.get(r.id)
     if (!ex) await db.dimensions.add({ id: r.id, name: r.name, color: r.color })
     else if (ex.name !== r.name || ex.color !== r.color) await db.dimensions.put({ ...ex, name: r.name, color: r.color })
@@ -386,6 +407,8 @@ export async function syncNow(opts = {}) {
     await pushDimensions(sb)
     await pushNotes(sb)
     await pushEvents(sb)
+    // подчистка лишних измерений в облаке — после пуша заметок (иначе FK)
+    await pruneCloudDimensions(sb)
     const pulled = await pullNotes(sb)
     const rest = await pullRest(sb)
     const pulledEvents = await pullEvents(sb)

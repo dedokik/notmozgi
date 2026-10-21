@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { db, DIMENSIONS as DEFAULT_DIMS, seedIfEmpty, seedDimensions, getSetting, setSetting } from './lib/db.js'
+import { db, DIMENSIONS as DEFAULT_DIMS, seedIfEmpty, seedDimensions, normalizeDimensions, getSetting, setSetting } from './lib/db.js'
 import { parseDeadlines, firstDeadline, fmtDate } from './lib/dates.js'
 import { parseWikiLinks } from './lib/links.js'
 import { buildPlan, recalcMissed, toggleChunk, toggleHabit, todayISO, isHabit, parseEffort } from './lib/chunks.js'
@@ -9,6 +9,9 @@ import { cloudEnabled, syncNow, cloud, cleanupDuplicates } from './lib/supabase.
 import GraphView from './components/GraphView.jsx'
 import MapView from './components/MapView.jsx'
 import SyncDiag from './components/SyncDiag.jsx'
+import HandwritingPad from './components/HandwritingPad.jsx'
+import EventModal from './components/EventModal.jsx'
+import { useViewportShift, useCoarsePointer } from './hooks/tablet.js'
 import { checkDeadlines, checkCalendarEvents } from './lib/notify.js'
 
 function getTasks(body) {
@@ -70,6 +73,12 @@ export default function App() {
   const [syncMsg, setSyncMsg] = useState('')
   const [lastSyncAt, setLastSyncAt] = useState('')
   const [notifState, setNotifState] = useState(() => (typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'))
+  // --- планшет/стилус ---
+  const [hwMode, setHwMode] = useState(false)      // рукописный режим редактора
+  const [padOpen, setPadOpen] = useState(false)    // холст для схем
+  const [evModalDay, setEvModalDay] = useState(null) // модалка события
+  const bodyRef = useViewportShift()
+  const coarse = useCoarsePointer()
   const notesRef = useRef([])
   notesRef.current = notes
   const eventsRef = useRef([])
@@ -84,8 +93,6 @@ export default function App() {
     } catch { /* ignore */ }
   }
   const [linkTarget, setLinkTarget] = useState('')
-  const [newDimName, setNewDimName] = useState('')
-  const [newDimColor, setNewDimColor] = useState('#a1a1aa')
   const [editingDimId, setEditingDimId] = useState(null)
   const knownDims = useRef(new Set(DEFAULT_DIMS.map((d) => d.id)))
   const syncing = useRef(false)
@@ -148,6 +155,8 @@ export default function App() {
     ;(async () => {
       await seedIfEmpty()
       await seedDimensions()
+      // оставляем только базовые три измерения (лишние удаляются, заметки → «Я»)
+      await normalizeDimensions()
       const ad = await db.dimensions.toArray()
       if (ad.length) {
         setDims(ad)
@@ -160,8 +169,12 @@ export default function App() {
       // тихий автосинк при старте, чтобы с другого устройства всё подтянулось само
       if (cloudEnabled) {
         const r = await syncNow({ quiet: true })
-        if (r.ok) { await refresh(); markSynced() }
-        else setSyncMsg(`Автосинк: ${r.reason}`)
+        if (r.ok) {
+          // после облака снова чистим: синк мог подтянуть лишние измерения
+          await normalizeDimensions()
+          await refresh()
+          markSynced()
+        } else setSyncMsg(`Автосинк: ${r.reason}`)
       }
       // ярлык "Новая заметка" с иконки приложения (manifest shortcuts → ?new=1)
       try {
@@ -260,35 +273,8 @@ export default function App() {
     else if (row && cur) setDims((prev) => prev.map((d) => (d.id === id ? { ...d, name: row.name } : d)))
     scheduleAutoPush()
   }
-  const addDim = async () => {
-    const name = newDimName.trim()
-    if (!name) return
-    const id = `d${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`
-    try {
-      await db.dimensions.add({ id, name, color: newDimColor })
-    } catch {
-      setSyncMsg('Не удалось создать измерение, попробуй ещё раз')
-      return
-    }
-    knownDims.current.add(id)
-    setDims((prev) => [...prev, { id, name, color: newDimColor }])
-    setEnabledDims((prev) => new Set(prev).add(id))
-    setNewDimName('')
-    scheduleAutoPush()
-  }
-  const deleteDim = async (id) => {
-    if (dims.length <= 1) return
-    const target = dims.find((d) => d.id !== id)
-    await db.transaction('rw', [db.notes, db.dimensions], async () => {
-      await db.notes.where('dimension').equals(id).modify({ dimension: target.id, updatedAt: Date.now() })
-      await db.dimensions.delete(id)
-    })
-    setDims((prev) => prev.filter((d) => d.id !== id))
-    setEnabledDims((prev) => { const n = new Set(prev); n.delete(id); return n })
-    if (draft && draft.dimension === id) setDraft({ ...draft, dimension: target.id })
-    await refresh()
-    scheduleAutoPush()
-  }
+  // Набор измерений фиксирован: Я, Учеба, Работа. Добавление и удаление недоступны,
+  // переименование — да (см. renameDimLive / saveDimName выше).
 
   const filtered = useMemo(() => notes.filter((n) => enabledDims.has(n.dimension)), [notes, enabledDims])
   const noteById = useMemo(() => new Map(notes.map((n) => [n.id, n])), [notes])
@@ -493,6 +479,26 @@ export default function App() {
     await refresh()
     scheduleAutoPush()
   }
+  // создание события из модалки (тап по дню в сетке)
+  const addEventFor = async (title, dimension) => {
+    if (!evModalDay) return
+    const date = dayKey(evModalDay)
+    const id = `ev${Date.now().toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`
+    await db.events.add({ id, date, title, dimension: dimension || null, deleted: 0, updatedAt: Date.now() })
+    setEvModalDay(null)
+    await refresh()
+    scheduleAutoPush()
+  }
+  // вставка нарисованной схемы в тело заметки
+  const insertSketch = async (dataUrl) => {
+    setPadOpen(false)
+    if (!draft) return
+    const body = `${draft.body}\n\n![Схема](${dataUrl})\n`
+    setDraft({ ...draft, body })
+    await db.notes.update(draft.id, { body, updatedAt: Date.now() })
+    await refresh()
+    scheduleAutoPush()
+  }
   const deleteEvent = async (id) => {
     // soft-delete: флаг расходится синком и не воскресает
     await db.events.update(id, { deleted: 1, updatedAt: Date.now() })
@@ -608,28 +614,11 @@ export default function App() {
                   </button>
                 )}
                 <button
-                  className="opacity-50 hover:opacity-100 px-1 text-sm shrink-0" title="Переименовать"
+                  className="opacity-50 hover:opacity-100 px-1 text-sm shrink-0 tiny" title="Переименовать"
                   onClick={() => setEditingDimId(editingDimId === d.id ? null : d.id)}
                 >✎</button>
-                {dims.length > 1 && (
-                  <button className="opacity-40 hover:opacity-100 text-xs shrink-0" title="Удалить измерение (заметки перейдут в другое)" onClick={() => deleteDim(d.id)}>✕</button>
-                )}
               </div>
             ))}
-            <div className="flex items-center gap-2 mt-2">
-              <input
-                type="color" value={newDimColor}
-                onChange={(e) => setNewDimColor(e.target.value)}
-                style={{ width: 26, height: 20, padding: 0, background: 'none', border: 'none', cursor: 'pointer' }}
-              />
-              <input
-                type="text" value={newDimName} placeholder="Новое измерение…"
-                onChange={(e) => setNewDimName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') addDim() }}
-                className="flex-1 min-w-0 rounded px-2 py-1 text-sm"
-              />
-              <button onClick={addDim} className="px-2 py-1 rounded panel text-sm">+</button>
-            </div>
             <button onClick={createNote} className="mt-3 w-full text-sm py-1.5 rounded accent-bg text-black font-semibold">+ Новая заметка</button>
             <button onClick={cleanup} className="mt-2 w-full text-xs py-1 rounded panel opacity-70" title="Удалить заметки-дубликаты с одинаковым названием">Убрать дубликаты</button>
           </div>
@@ -650,7 +639,7 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     <span className="w-2 h-2 rounded-sm" style={{ background: dim?.color }} />
                     <b className="text-sm truncate flex-1">{n.title || 'Без названия'}</b>
-                    <button className="opacity-40 hover:opacity-100 text-xs" onClick={(e) => { e.stopPropagation(); deleteNote(n.id) }}>✕</button>
+                    <button className="opacity-40 hover:opacity-100 text-xs tiny" onClick={(e) => { e.stopPropagation(); deleteNote(n.id) }}>✕</button>
                   </div>
                   <div className="text-xs opacity-50 truncate mt-0.5">{(n.body || '').slice(0, 80)}</div>
                   {dl && (
@@ -667,7 +656,7 @@ export default function App() {
         </aside>
 
         {/* main */}
-        <main className="flex-1 min-w-0 p-4 overflow-auto">
+        <main className="flex-1 min-w-0 p-4 overflow-auto pad-bottom">
           {tab === 'notes' ? (
             !draft ? (
               <div className="opacity-50">Выбери заметку слева или создай новую.</div>
@@ -695,6 +684,21 @@ export default function App() {
                     </button>
                   ))}
                   <div className="flex-1" />
+                  <button
+                    onClick={() => { setHwMode((v) => !v); setPreview(false) }}
+                    className="px-3 py-2 rounded panel text-sm"
+                    style={hwMode ? { borderColor: 'var(--accent)', fontWeight: 700 } : {}}
+                    title="Рукописный режим: крупный текст, удобно писать стилусом"
+                  >
+                    ✍ Рукопись
+                  </button>
+                  <button
+                    onClick={() => setPadOpen(true)}
+                    className="px-3 py-2 rounded panel text-sm"
+                    title="Нарисовать схему стилусом и вставить в заметку"
+                  >
+                    ✎ Схема
+                  </button>
                   <button onClick={saveNow} className="px-4 py-1 rounded accent-bg text-black font-semibold text-sm">
                     Сохранить
                   </button>
@@ -709,11 +713,14 @@ export default function App() {
                   </div>
                 ) : (
                   <textarea
+                    ref={bodyRef}
                     value={draft.body}
                     onChange={(e) => setDraft({ ...draft, body: e.target.value })}
-                    rows={12}
-                    className="w-full rounded p-3 font-mono text-sm"
-                    placeholder={'# Заголовок\n\n- [ ] задача\n\nСвязь: [[Другая заметка]]\n\nдедлайн: 30.09'}
+                    rows={hwMode ? 20 : 12}
+                    className={`w-full rounded p-3 font-mono text-sm ${hwMode ? 'hw-textarea' : ''}`}
+                    placeholder={hwMode
+                      ? 'Пиши стилусом — текст распознается и попадает в заметку'
+                      : '# Заголовок\n\n- [ ] задача\n\nСвязь: [[Другая заметка]]\n\nдедлайн: 30.09'}
                   />
                 )}
 
@@ -820,7 +827,8 @@ export default function App() {
               </div>
             )
           ) : tab === 'calendar' ? (
-            <div className="max-w-4xl mx-auto">
+            <div className="max-w-4xl mx-auto split-cols">
+              <div>
               <div className="flex items-center gap-2 mb-2 flex-wrap">
                 <button className="panel rounded px-2 py-1 text-sm" onClick={() => stepCal(-1)}>←</button>
                 <b className="capitalize">{calView === 'month' ? monthName : `Неделя ${weekTitle}`}</b>
@@ -845,14 +853,17 @@ export default function App() {
                   return (
                     <div
                       key={i}
-                      onClick={() => setSelectedDay(d)}
-                      className="panel rounded p-1 min-h-[64px] cursor-pointer"
+                      onClick={() => {
+                        setSelectedDay(d)
+                        if (coarse) setEvModalDay(d) // на планшете тап сразу открывает модалку
+                      }}
+                      className="panel rounded p-1 cal-cell cursor-pointer"
                       style={{
                         opacity: inMonth ? 1 : 0.35,
                         borderColor: selectedDay?.toDateString() === d.toDateString() ? 'var(--accent)' : undefined,
                       }}
                     >
-                      <div className="text-xs" style={isToday ? { color: 'var(--accent)', fontWeight: 700 } : {}}>{d.getDate()}</div>
+                      <div className="day-num" style={isToday ? { color: 'var(--accent)', fontWeight: 700 } : {}}>{d.getDate()}</div>
                       <div className="flex flex-wrap gap-1 mt-1">
                         {items.slice(0, 4).map(({ note }, j) => (
                           <span key={j} title={note.title} className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: dimById[note.dimension]?.color }} />
@@ -869,7 +880,9 @@ export default function App() {
                   )
                 })}
               </div>
+              </div>
 
+              <div>
               <div className="panel rounded p-3 mt-4">
                 <div className="text-xs uppercase opacity-50 mb-2">
                   {selectedDay ? `На ${fmtDate(selectedDay)}` : 'Ближайшие дедлайны'}
@@ -918,13 +931,23 @@ export default function App() {
               </div>
 
               <div className="panel rounded p-3 mt-4">
-                <div className="text-xs uppercase opacity-50 mb-2">События: {fmtDate(focusDay)} (без заметок)</div>
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="text-xs uppercase opacity-50">События: {fmtDate(focusDay)}</div>
+                  <div className="flex-1" />
+                  <button
+                    onClick={() => setEvModalDay(focusDay)}
+                    className="px-3 py-2 rounded panel text-sm"
+                    title="Добавить событие на этот день"
+                  >
+                    + событие
+                  </button>
+                </div>
                 {focusEvents.length === 0 && <div className="text-sm opacity-50">На этот день ничего не запланировано.</div>}
                 {focusEvents.map((e) => (
                   <div key={e.id} className="flex items-center gap-2 text-sm py-1 border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
                     <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: dimById[e.dimension]?.color || 'var(--accent)' }} />
                     <span className="flex-1 truncate">{e.title}</span>
-                    <button className="text-xs opacity-40 hover:opacity-100 shrink-0" onClick={() => deleteEvent(e.id)}>✕</button>
+                    <button className="text-xs opacity-40 hover:opacity-100 shrink-0 tiny" onClick={() => deleteEvent(e.id)}>✕</button>
                   </div>
                 ))}
                 <div className="flex items-center gap-2 mt-2">
@@ -943,6 +966,7 @@ export default function App() {
                   <button onClick={addEvent} className="px-3 py-1 rounded accent-bg text-black font-semibold text-sm shrink-0">+</button>
                 </div>
                 <div className="text-xs opacity-40 mt-1">Кликни день в сетке — и подпиши его здесь.</div>
+              </div>
               </div>
             </div>
           ) : tab === 'graph' ? (
@@ -973,6 +997,19 @@ export default function App() {
         </div>
         <button onClick={createNote} className="m-2 px-3 rounded accent-bg text-black font-bold">+</button>
       </div>
+
+      {/* модалка нового события (тап по дню на планшете) */}
+      {evModalDay && (
+        <EventModal
+          day={evModalDay}
+          dims={dims.filter((d) => enabledDims.has(d.id))}
+          onClose={() => setEvModalDay(null)}
+          onCreate={addEventFor}
+        />
+      )}
+
+      {/* холст для схем (стилус) */}
+      {padOpen && <HandwritingPad onSave={insertSketch} onClose={() => setPadOpen(false)} />}
     </div>
   )
 }

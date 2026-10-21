@@ -45,6 +45,32 @@ export async function seedDimensions() {
   await db.dimensions.bulkAdd(DIMENSIONS.map((d) => ({ ...d })))
 }
 
+// Приводит набор измерений к трём базовым (Я, Учеба, Работа).
+// Все лишние удаляются, а их заметки переезжают в «Я».
+// Вызывается при каждом старте — в т.ч. после подтягивания из облака.
+export async function normalizeDimensions() {
+  const baseIds = DIMENSIONS.map((d) => d.id)
+  const all = await db.dimensions.toArray()
+  const extra = all.filter((d) => !baseIds.includes(d.id))
+  const fallback = DIMENSIONS[0].id // «Я» — куда переезжают чужие заметки
+
+  if (extra.length) {
+    await db.transaction('rw', [db.notes, db.dimensions], async () => {
+      for (const d of extra) {
+        await db.notes.where('dimension').equals(d.id).modify({ dimension: fallback, updatedAt: Date.now() })
+        await db.dimensions.delete(d.id)
+      }
+    })
+  }
+
+  // создаём недостающие базовые (с сохранением переименований)
+  for (const d of DIMENSIONS) {
+    const ex = await db.dimensions.get(d.id)
+    if (!ex) await db.dimensions.add({ ...d })
+  }
+  return extra.length
+}
+
 export async function seedIfEmpty() {
   const count = await db.notes.count()
   if (count > 0) return
