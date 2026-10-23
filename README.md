@@ -65,14 +65,14 @@ node node_modules/@tailwindcss/cli/dist/index.mjs -i src/index.css -o site/app.c
 
 ```bash
 npm install
-npm run dev        # http://<ip-ноутбука>:5173 — открывать с планшета по Wi-Fi
-npm run build      # dist/ = копия site/ (то, что уезжает на хостинг)
-npm run build:vite # классическая сборка Vite (если нужен её пайплайн)
+npm run dev          # http://<ip-ноутбука>:5173 — открывать с планшета по Wi-Fi
+npm run build        # Vite-сборка в dist/ — ровно то, что делает Cloudflare
+npm run build:static # dist/ = копия site/ (без Vite и нативных бинарников)
 ```
 
-`npm run build` намеренно не запускает Vite: он просто копирует `site/` в `dist/`.
-Так деплой на Cloudflare/Netlify отдаёт ровно ту сборку, которая проверена,
-и не может упасть из-за нативных бинарников или версии Node в CI.
+Cloudflare собирает этот репозиторий сам: build command `vite build`,
+output `dist`. Папка `site/` — независимый вариант «залить как есть»,
+на деплой через Cloudflare она не влияет.
 
 Ключи Supabase для этого варианта — в `.env` (см. `.env.example`).
 Без ключей приложение работает полностью локально.
