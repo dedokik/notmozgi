@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { ReactFlow, MiniMap, Controls, Background, MarkerType } from '@xyflow/react'
-import '@xyflow/react/dist/style.css'
+// стили react-flow подключены в src/index.css (один общий app.css)
 import { buildEdges } from '../lib/links.js'
 
 // Эго-граф одной заметки: центр + прямые соседи (входящие и исходящие связи).

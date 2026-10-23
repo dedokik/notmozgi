@@ -1,14 +1,14 @@
 {
   "name": "not",
-  "version": "0.1.0-mvp",
+  "version": "0.3.0",
   "type": "module",
-  "description": "NotMozgi — Minimal Dark OS: notes, calendar, graph, habits, pixel map",
+  "description": "NotMozgi — notes with pinning, canvas boards, calendar pins, offline-first Supabase sync",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0"
   },
-  "keywords": [],
+  "keywords": ["notes", "pwa", "offline-first", "supabase", "canvas"],
   "author": "",
   "license": "ISC",
   "dependencies": {

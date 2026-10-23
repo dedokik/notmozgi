@@ -1,7 +1,10 @@
+/* стили графа включаем сюда, чтобы они попали в общий app.css
+   и в статической сборке (esbuild CSS не эмитит) */
+@import "@xyflow/react/dist/style.css";
 @import "tailwindcss";
 
 :root {
-  /* тёмная тема по скриншотам */
+  /* тёмная тема */
   --bg: #0d0d10;
   --panel: #16161a;
   --panel-2: #1f1f24;
@@ -10,14 +13,17 @@
   --muted: #71717a;
   --border: #2d2d34;
   --accent: #3b82f6;
-  --accent-soft: rgba(59,130,246,0.15);
+  --accent-soft: rgba(59, 130, 246, 0.15);
+  --pin: #facc15;
   --danger: #ef4444;
   --r: 16px;
-  --shadow: 0 1px 3px rgba(0,0,0,0.35), 0 4px 6px -1px rgba(0,0,0,0.25);
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 4px 6px -1px rgba(0, 0, 0, 0.25);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
-html, body, #root {
+html,
+body,
+#root {
   height: 100%;
 }
 
@@ -26,6 +32,7 @@ body {
   color: var(--text);
   font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
   margin: 0;
+  overscroll-behavior: none;
 }
 
 .panel {
@@ -40,14 +47,20 @@ body {
 .accent-border { border-color: var(--accent); }
 .danger-text { color: var(--danger); }
 
-textarea, input[type="text"], input[type="number"], select {
+textarea,
+input[type="text"],
+input[type="number"],
+select {
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
   outline: none;
   border-radius: 12px;
 }
-textarea:focus, input[type="text"]:focus, input[type="number"]:focus, select:focus {
+textarea:focus,
+input[type="text"]:focus,
+input[type="number"]:focus,
+select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
@@ -56,7 +69,184 @@ option {
   color: var(--text);
 }
 
-/* цветные блоки событий (как на скриншоте календаря) */
+/* ---------- верхняя панель ---------- */
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  flex-wrap: wrap;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  border-radius: 0;
+}
+
+.tab-btn {
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  cursor: pointer;
+  min-height: 40px;
+}
+.tab-btn:hover { border-color: var(--accent); }
+
+.icon-btn {
+  font-size: 18px;
+  line-height: 1;
+  padding: 8px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.chip {
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  min-height: 40px;
+}
+
+/* ---------- сайдбар ---------- */
+.app-sidebar {
+  width: 320px;
+  border-top: 0;
+  border-bottom: 0;
+  border-left: 0;
+  border-radius: 0;
+}
+
+.list-section {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 10px 8px 6px;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+
+/* ---------- карточка заметки ---------- */
+.note-card {
+  padding: 10px;
+  margin-bottom: 6px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.note-card:hover { border-color: #3f3f4a; }
+.note-card.is-active { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.note-card.is-pinned { border-left: 3px solid var(--pin); }
+
+.note-card-row { display: flex; align-items: center; gap: 8px; }
+.note-dot { width: 8px; height: 8px; border-radius: 3px; flex: none; }
+.note-title {
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.note-badge { font-size: 12px; opacity: 0.8; }
+.note-snippet {
+  font-size: 12px;
+  opacity: 0.5;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.note-meta { font-size: 11px; opacity: 0.65; margin-top: 2px; }
+.note-meta.is-overdue { color: var(--danger); opacity: 1; }
+
+/* ---------- булавка (крупная зона под стилус) ---------- */
+.pin-btn {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  line-height: 1;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.12s ease, background 0.12s ease, transform 0.08s ease;
+}
+.pin-btn:hover { opacity: 1; background: rgba(255, 255, 255, 0.06); }
+.pin-btn:active { transform: scale(0.94); }
+.pin-btn.is-on {
+  opacity: 1;
+  background: rgba(250, 204, 21, 0.16);
+  border-color: rgba(250, 204, 21, 0.45);
+}
+.pin-btn-lg { width: 48px; height: 48px; font-size: 22px; }
+.pin-btn-sm { width: 34px; height: 34px; font-size: 15px; }
+
+.del-btn {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  opacity: 0.35;
+  cursor: pointer;
+  font-size: 14px;
+}
+.del-btn:hover { opacity: 1; color: var(--danger); background: rgba(239, 68, 68, 0.12); }
+
+/* ---------- переключатель формата заметки ---------- */
+.seg {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.seg-btn {
+  padding: 8px 12px;
+  border-radius: 11px;
+  border: 0;
+  background: transparent;
+  color: var(--text-soft);
+  font-size: 13px;
+  cursor: pointer;
+  min-height: 38px;
+}
+.seg-btn.is-on { background: var(--accent); color: #0d0d10; font-weight: 700; }
+
+/* ---------- календарь ---------- */
+.cal-cell { min-height: 76px; }
+.cal-cell .day-num { font-size: 12px; }
+.cal-cell.is-pinned-day { border-color: rgba(250, 204, 21, 0.55); background: rgba(250, 204, 21, 0.06); }
+.cal-pin { font-size: 10px; line-height: 1; }
+
+/* цветные блоки событий */
 .ev {
   display: flex;
   align-items: center;
@@ -68,26 +258,21 @@ option {
   margin: 4px 0;
   border: 1px solid transparent;
 }
-.ev .dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex: none;
-}
-.ev-purple { background: rgba(139,92,246,0.15); color: #c4b5fd; border-color: rgba(139,92,246,0.35); }
+.ev .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.ev-purple { background: rgba(139, 92, 246, 0.15); color: #c4b5fd; border-color: rgba(139, 92, 246, 0.35); }
 .ev-purple .dot { background: #8b5cf6; }
-.ev-orange { background: rgba(251,146,60,0.15); color: #fdba74; border-color: rgba(251,146,60,0.35); }
+.ev-orange { background: rgba(251, 146, 60, 0.15); color: #fdba74; border-color: rgba(251, 146, 60, 0.35); }
 .ev-orange .dot { background: #fb923c; }
-.ev-red { background: rgba(239,68,68,0.15); color: #fca5a5; border-color: rgba(239,68,68,0.35); }
+.ev-red { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border-color: rgba(239, 68, 68, 0.35); }
 .ev-red .dot { background: #ef4444; }
-.ev-green { background: rgba(34,197,94,0.15); color: #86efac; border-color: rgba(34,197,94,0.35); }
+.ev-green { background: rgba(34, 197, 94, 0.15); color: #86efac; border-color: rgba(34, 197, 94, 0.35); }
 .ev-green .dot { background: #22c55e; }
-.ev-blue { background: rgba(59,130,246,0.15); color: #93c5fd; border-color: rgba(59,130,246,0.35); }
+.ev-blue { background: rgba(59, 130, 246, 0.15); color: #93c5fd; border-color: rgba(59, 130, 246, 0.35); }
 .ev-blue .dot { background: #3b82f6; }
 
 /* ---------- планшет / стилус ---------- */
 
-/* холст рисования: жесты не должны скроллить страницу */
+/* холст рисования схем: жесты не должны скроллить страницу */
 .pad-canvas {
   touch-action: none;
   display: block;
@@ -98,7 +283,7 @@ option {
   cursor: crosshair;
 }
 
-/* модалки */
+/* ---------- модалки ---------- */
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -133,23 +318,25 @@ option {
 }
 .hw-textarea::placeholder { font-size: 15px; opacity: 0.5; }
 
-/* ячейка дня в календаре */
-.cal-cell { min-height: 72px; }
-.cal-cell .day-num { font-size: 12px; }
-
-/* крупные зоны нажатия: стилус и палец */
+/* крупные зоны нажатия: стилус и палец (Xiaomi Pad 6) */
 @media (pointer: coarse) {
   button { min-height: 44px; }
-  button.tiny { min-height: 30px; min-width: 30px; padding: 2px 6px; }
+  button.tiny { min-height: 32px; min-width: 32px; padding: 2px 6px; }
   input[type="checkbox"] { width: 26px !important; height: 26px !important; }
-  .cal-cell { min-height: 104px !important; }
+  .cal-cell { min-height: 108px !important; }
   .cal-cell .day-num { font-size: 16px !important; }
   textarea#noteBody { font-size: 17px; line-height: 1.85; }
   .hw-textarea { font-size: 21px !important; line-height: 2.1 !important; }
   .panel { border-radius: 20px; }
+  .pin-btn { width: 46px; height: 46px; font-size: 19px; }
+  .pin-btn-lg { width: 54px; height: 54px; font-size: 24px; }
+  .note-card { padding: 12px; }
+  .note-title { font-size: 15px; }
+  .tab-btn { min-height: 44px; padding: 10px 14px; }
+  .chip { min-height: 44px; }
 }
 
-/* планшет в горизонтали: две колонки — список/календарь слева, работа справа */
+/* планшет в горизонтали: две колонки — календарь слева, детали справа */
 @media (min-width: 1100px) {
   .split-cols {
     display: grid;
@@ -159,7 +346,7 @@ option {
   }
 }
 
-/* отступ снизу под панель рукописного ввода */
+/* отступ снизу под панель рукописного ввода (Gboard) */
 .pad-bottom { padding-bottom: var(--kb, 0px); }
 
 /* markdown preview */
@@ -171,3 +358,104 @@ option {
 .md ul { padding-left: 1.2em; list-style: disc; }
 .md li { margin: 0.25em 0; }
 .md code { background: #111; border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; }
+.md img { max-width: 100%; border-radius: 12px; }
+
+/* ---------- холст заметки (CanvasBoard) ---------- */
+.cb-wrap {
+  position: relative;
+  height: 62vh;
+  min-height: 380px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: #101014;
+}
+.cb-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgba(22, 22, 26, 0.92);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(6px);
+}
+.cb-tool {
+  min-width: 38px;
+  height: 38px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+}
+.cb-tool:hover { border-color: var(--accent); }
+.cb-tool.is-active { background: var(--accent); color: #0d0d10; border-color: var(--accent); font-weight: 700; }
+.cb-tool:disabled { opacity: 0.35; cursor: default; }
+.cb-tool.cb-clear { font-size: 12px; }
+.cb-sep { width: 1px; height: 22px; background: var(--border); margin: 0 2px; }
+.cb-swatch {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.cb-swatch.is-active { border-color: var(--text); box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.15); }
+.cb-dot { display: inline-block; border-radius: 50%; background: currentColor; }
+
+.cb-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  background: #101014;
+}
+.cb-text-input {
+  position: absolute;
+  z-index: 4;
+  width: 200px;
+  padding: 6px 10px;
+  font-size: 15px;
+  border-radius: 10px;
+  border: 1px solid var(--accent);
+  background: var(--panel-2);
+  color: var(--text);
+}
+.cb-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  max-width: 90%;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.cb-status {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+@media (pointer: coarse) {
+  .cb-tool { min-width: 44px; height: 44px; font-size: 17px; }
+  .cb-swatch { width: 36px; height: 36px; }
+  .cb-wrap { height: 58vh; }
+}
