@@ -19,7 +19,6 @@
   "license": "ISC",
   "dependencies": {
     "@supabase/supabase-js": "^2.109.0",
-    "@xyflow/react": "^12.12.0",
     "dexie": "^4.4.6",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

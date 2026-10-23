@@ -71,6 +71,7 @@ function hashStr(s) {
 }
 
 const canvasKey = (n) => (n && n.canvas_data ? hashStr(JSON.stringify(n.canvas_data)) : '-')
+const drawKey = (n) => (n && n.draw_data ? hashStr(JSON.stringify(n.draw_data)) : '-')
 
 // Хэш содержимого: одинаковое не заливаем, иначе каждый фоновый опрос
 // перезаписывал бы всё и спамил журнал + облако.
@@ -83,6 +84,7 @@ export const hashNote = (n) =>
     n.is_pinned ? 1 : 0,
     n.note_type || 'text',
     canvasKey(n),
+    drawKey(n),
   ].join('|')
 
 export async function markPushed(localId, note) {
@@ -95,7 +97,7 @@ export async function markPushed(localId, note) {
 function isMissingColumn(err) {
   if (!err) return false
   const t = `${err.code || ''} ${err.message || ''} ${err.details || ''}`
-  return /(is_pinned|note_type|canvas_data)/i.test(t) && /(column|schema cache|does not exist|PGRST204|42703)/i.test(t)
+  return /(is_pinned|note_type|canvas_data|draw_data)/i.test(t) && /(column|schema cache|does not exist|PGRST204|42703)/i.test(t)
 }
 
 function noteRow(n, withV2) {
@@ -110,6 +112,7 @@ function noteRow(n, withV2) {
     row.is_pinned = !!n.is_pinned
     row.note_type = n.note_type === 'canvas' ? 'canvas' : 'text'
     row.canvas_data = n.canvas_data || null
+    row.draw_data = n.draw_data || null
   }
   return row
 }
@@ -184,6 +187,7 @@ async function pullNotes(sb) {
     is_pinned: r.is_pinned ? 1 : 0,
     note_type: r.note_type === 'canvas' ? 'canvas' : 'text',
     canvas_data: r.canvas_data || null,
+    draw_data: r.draw_data || null,
     updatedAt: new Date(r.updated_at).getTime() || Date.now(),
   })
   const hashOf = (p) => hashNote(p)
@@ -236,6 +240,7 @@ async function pullNotes(sb) {
             is_pinned: twin.is_pinned ? 1 : 0,
             note_type: twin.note_type === 'canvas' ? 'canvas' : 'text',
             canvas_data: twin.canvas_data || null,
+            draw_data: twin.draw_data || null,
             updatedAt: twin.updatedAt,
           })
         }
@@ -553,6 +558,7 @@ export async function cleanupDuplicates() {
             is_pinned: r.is_pinned ? 1 : 0,
             note_type: r.note_type === 'canvas' ? 'canvas' : 'text',
             canvas_data: r.canvas_data || null,
+            draw_data: r.draw_data || null,
             updatedAt: rTs,
           })
         }
@@ -567,6 +573,7 @@ export async function cleanupDuplicates() {
           is_pinned: r.is_pinned ? 1 : 0,
           note_type: r.note_type === 'canvas' ? 'canvas' : 'text',
           canvas_data: r.canvas_data || null,
+          draw_data: r.draw_data || null,
           updatedAt: rTs,
         })
         map[`note:${id}`] = r.id

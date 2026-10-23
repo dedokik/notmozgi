@@ -1,6 +1,3 @@
-/* стили графа включаем сюда, чтобы они попали в общий app.css
-   и в статической сборке (esbuild CSS не эмитит) */
-@import "@xyflow/react/dist/style.css";
 @import "tailwindcss";
 
 :root {
@@ -458,4 +455,127 @@ option {
   .cb-tool { min-width: 44px; height: 44px; font-size: 17px; }
   .cb-swatch { width: 36px; height: 36px; }
   .cb-wrap { height: 58vh; }
+}
+
+
+/* ---------- граф ---------- */
+.graph-host {
+  height: calc(100vh - 210px);
+  min-height: 520px;
+}
+.gv-wrap {
+  position: relative;
+  height: 100%;
+  min-height: 480px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: #101014;
+}
+.gv-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  background: #101014;
+}
+.gv-toolbar {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgba(22, 22, 26, 0.92);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(6px);
+}
+.gv-legend {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 8px;
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: none;
+}
+.gv-legend i {
+  display: inline-block;
+  width: 20px;
+  height: 0;
+  border-top: 2px dashed #8b5cf6;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+.gv-legend i.gv-solid { border-top: 2px solid var(--accent); }
+.gv-hint { margin-left: auto; opacity: 0.8; }
+.gv-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+
+/* ---------- рисунок поверх текста заметки ---------- */
+.draw-page { position: relative; }
+.draw-page-text {
+  display: block;
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  min-height: 240px;
+  line-height: 1.6;
+}
+.draw-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.draw-layer.is-active { pointer-events: auto; }
+.draw-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  border-radius: 12px;
+}
+.draw-layer.is-active .draw-svg {
+  background: rgba(59, 130, 246, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.35);
+  cursor: crosshair;
+}
+.draw-tools {
+  position: sticky;
+  top: 6px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: max-content;
+  max-width: calc(100% - 12px);
+  margin: 6px 6px 0 auto;
+  padding: 6px;
+  border-radius: 14px;
+  background: rgba(22, 22, 26, 0.94);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(6px);
+}
+
+@media (pointer: coarse) {
+  .draw-tools .cb-tool { min-width: 44px; height: 44px; }
+  .draw-tools .cb-swatch { width: 34px; height: 34px; }
+  .gv-toolbar .cb-tool { min-width: 44px; height: 44px; }
+  .gv-toolbar .cb-swatch { width: 34px; height: 34px; }
 }

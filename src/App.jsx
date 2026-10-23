@@ -25,7 +25,7 @@ import { cloudEnabled, syncNow, cloud, cleanupDuplicates } from './lib/supabase.
 import GraphView from './components/GraphView.jsx'
 import MapView from './components/MapView.jsx'
 import SyncDiag from './components/SyncDiag.jsx'
-import HandwritingPad from './components/HandwritingPad.jsx'
+import DrawLayer from './components/DrawLayer.jsx'
 import EventModal from './components/EventModal.jsx'
 import NoteCard from './components/NoteCard.jsx'
 import CanvasBoard from './components/CanvasBoard.jsx'
@@ -77,8 +77,11 @@ function sameContent(a, b) {
     (a.note_type || 'text') !== (b.note_type || 'text')
   )
     return false
-  if (a.canvas_data === b.canvas_data) return true
-  return JSON.stringify(a.canvas_data || null) === JSON.stringify(b.canvas_data || null)
+  if (a.canvas_data === b.canvas_data && a.draw_data === b.draw_data) return true
+  return (
+    JSON.stringify(a.canvas_data || null) === JSON.stringify(b.canvas_data || null) &&
+    JSON.stringify(a.draw_data || null) === JSON.stringify(b.draw_data || null)
+  )
 }
 
 export default function App() {
@@ -112,7 +115,9 @@ export default function App() {
 
   // --- планшет/стилус ---
   const [hwMode, setHwMode] = useState(false)
-  const [padOpen, setPadOpen] = useState(false)
+  const [drawMode, setDrawMode] = useState(false)
+  const [graphPos, setGraphPos] = useState({})
+  const [graphDraw, setGraphDraw] = useState({ version: 1, elements: [] })
   const [evModalDay, setEvModalDay] = useState(null)
   const bodyRef = useViewportShift()
   const coarse = useCoarsePointer()
@@ -316,8 +321,18 @@ export default function App() {
   useEffect(() => {
     setDraft(active ? { ...active } : null)
     setPreview(false)
+    setDrawMode(false)
     setLinkTarget('')
   }, [activeId])
+
+  // textarea растягивается под текст: рисунок поверх привязан к странице,
+  // а не к внутренней прокрутке поля
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.max(240, el.scrollHeight)}px`
+  }, [draft?.body, draft?.id, hwMode, preview, drawMode])
 
   // автосохранение черновика (текст и холст — одинаково).
   // Перед записью сверяемся с базой: открытие заметки не должно менять updatedAt
@@ -334,12 +349,13 @@ export default function App() {
         estimateHours: Number(draft.estimateHours) || 0,
         note_type: draft.note_type === 'canvas' ? 'canvas' : 'text',
         canvas_data: draft.canvas_data || null,
+        draw_data: draft.draw_data || null,
       })
       await refresh()
       scheduleAutoPush()
     }, 500)
     return () => clearTimeout(t)
-  }, [draft?.id, draft?.title, draft?.body, draft?.dimension, draft?.estimateHours, draft?.note_type, draft?.canvas_data])
+  }, [draft?.id, draft?.title, draft?.body, draft?.dimension, draft?.estimateHours, draft?.note_type, draft?.canvas_data, draft?.draw_data])
 
   // ---------- измерения ----------
 
@@ -484,6 +500,7 @@ export default function App() {
       estimateHours: Number(draft.estimateHours) || 0,
       note_type: draft.note_type === 'canvas' ? 'canvas' : 'text',
       canvas_data: draft.canvas_data || null,
+      draw_data: draft.draw_data || null,
     })
     await refresh()
     const t = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
@@ -667,14 +684,15 @@ export default function App() {
     scheduleAutoPush()
   }
 
-  const insertSketch = async (dataUrl) => {
-    setPadOpen(false)
-    if (!draft) return
-    const body = `${draft.body}\n\n![Схема](${dataUrl})\n`
-    setDraft({ ...draft, body })
-    await updateNote(draft.id, { body })
-    await refresh()
-    scheduleAutoPush()
+  // положение узлов и рисунок поверх графа живут в настройках устройства
+  const onGraphPositions = (next) => {
+    setGraphPos(next)
+    setSetting('graphPos', next).catch(() => {})
+  }
+
+  const onGraphDraw = (next) => {
+    setGraphDraw(next)
+    setSetting('graphDraw', next).catch(() => {})
   }
 
   const weekCells = useMemo(() => {
@@ -1016,8 +1034,16 @@ export default function App() {
                       >
                         ✍ Рукопись
                       </button>
-                      <button onClick={() => setPadOpen(true)} className="chip" title="Нарисовать схему стилусом">
-                        ✎ Схема
+                      <button
+                        onClick={() => {
+                          setDrawMode((v) => !v)
+                          setPreview(false)
+                        }}
+                        className="chip"
+                        style={drawMode ? { borderColor: 'var(--accent)', fontWeight: 700 } : {}}
+                        title="Рисовать прямо поверх текста"
+                      >
+                        ✏️ Рисовать
                       </button>
                       <button onClick={saveNow} className="px-4 py-2 rounded accent-bg text-black font-semibold text-sm">
                         Сохранить
@@ -1032,18 +1058,27 @@ export default function App() {
                         <ReactMarkdown>{draft.body}</ReactMarkdown>
                       </div>
                     ) : (
-                      <textarea
-                        ref={bodyRef}
-                        value={draft.body}
-                        onChange={(e) => setDraft({ ...draft, body: e.target.value })}
-                        rows={hwMode ? 20 : 12}
-                        className={`w-full rounded p-3 font-mono text-sm ${hwMode ? 'hw-textarea' : ''}`}
-                        placeholder={
-                          hwMode
-                            ? 'Пиши стилусом — текст распознается и попадает в заметку'
-                            : '# Заголовок\n\n- [ ] задача\n\nСвязь: [[Другая заметка]]\n\nдедлайн: 30.09'
-                        }
-                      />
+                      <div className="draw-page">
+                        <textarea
+                          ref={bodyRef}
+                          value={draft.body}
+                          onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+                          readOnly={drawMode}
+                          rows={hwMode ? 20 : 12}
+                          className={`draw-page-text w-full rounded p-3 font-mono text-sm ${hwMode ? 'hw-textarea' : ''}`}
+                          placeholder={
+                            hwMode
+                              ? 'Пиши стилусом — текст распознается и попадает в заметку'
+                              : '# Заголовок\n\n- [ ] задача\n\nСвязь: [[Другая заметка]]\n\nдедлайн: 30.09'
+                          }
+                        />
+                        <DrawLayer
+                          key={draft.id}
+                          active={drawMode}
+                          value={draft.draw_data}
+                          onChange={(next) => setDraft((d) => (d ? { ...d, draw_data: next } : d))}
+                        />
+                      </div>
                     )}
 
                     {(() => {
@@ -1430,15 +1465,18 @@ export default function App() {
               </div>
             </div>
           ) : tab === 'graph' ? (
-            <div className="h-full" style={{ minHeight: 480 }}>
+            <div className="graph-host">
               <GraphView
                 notes={notes}
                 manualLinks={links}
                 dims={dims}
                 enabledDims={enabledDims}
                 activeId={activeId}
-                onSelect={setActiveId}
                 onOpen={openNote}
+                positions={graphPos}
+                onPositionsChange={onGraphPositions}
+                drawData={graphDraw}
+                onDrawChange={onGraphDraw}
               />
             </div>
           ) : tab === 'map' ? (
@@ -1479,7 +1517,6 @@ export default function App() {
         />
       )}
 
-      {padOpen && <HandwritingPad onSave={insertSketch} onClose={() => setPadOpen(false)} />}
     </div>
   )
 }

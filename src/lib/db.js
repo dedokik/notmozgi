@@ -124,6 +124,7 @@ export async function createNote({ title = 'Новая заметка', body = '
     is_pinned: 0,
     note_type,
     canvas_data: note_type === 'canvas' ? emptyCanvas() : null,
+    draw_data: null,
     updatedAt: nowTs(),
   }
   return db.notes.add(row)

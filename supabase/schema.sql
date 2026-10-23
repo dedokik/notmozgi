@@ -35,6 +35,8 @@ create table if not exists public.notes (
 alter table public.notes add column if not exists is_pinned   boolean not null default false;
 alter table public.notes add column if not exists note_type   text    not null default 'text';
 alter table public.notes add column if not exists canvas_data jsonb;
+-- рисунок поверх текста (штрихи стилусом по заметке)
+alter table public.notes add column if not exists draw_data  jsonb;
 alter table public.notes alter column dimension set default 'ya';
 
 -- если раньше запускали «сырую» миграцию, там могли остаться NULL
