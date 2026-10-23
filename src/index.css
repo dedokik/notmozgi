@@ -579,3 +579,35 @@ option {
   .gv-toolbar .cb-tool { min-width: 44px; height: 44px; }
   .gv-toolbar .cb-swatch { width: 34px; height: 34px; }
 }
+
+/* чипы измерений в графе */
+.gv-dims {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.gv-dim {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  min-height: 32px;
+}
+.gv-dim:hover { border-color: var(--accent); }
+.gv-dim.is-on { border-color: var(--accent); font-weight: 700; }
+.gv-dim-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  display: inline-block;
+}
+@media (pointer: coarse) {
+  .gv-dim { min-height: 40px; padding: 8px 12px; font-size: 13px; }
+}

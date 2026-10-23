@@ -57,6 +57,15 @@ const f1 = (x) => Math.round(x * 10) / 10
 const dayKey = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
+// измерения всегда в одном порядке: Я, Учёба, Работа, дальше — остальные
+const DIM_ORDER = DEFAULT_DIMS.map((d) => d.id)
+const sortDims = (list) =>
+  [...list].sort((a, b) => {
+    const ia = DIM_ORDER.indexOf(a.id)
+    const ib = DIM_ORDER.indexOf(b.id)
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib)
+  })
+
 // дешёвая подпись состояния списка: перерисовываем только при реальных изменениях
 const notesSig = (arr) =>
   arr
@@ -116,8 +125,9 @@ export default function App() {
   // --- планшет/стилус ---
   const [hwMode, setHwMode] = useState(false)
   const [drawMode, setDrawMode] = useState(false)
-  const [graphPos, setGraphPos] = useState({})
-  const [graphDraw, setGraphDraw] = useState({ version: 1, elements: [] })
+  const [graphDim, setGraphDim] = useState('all') // 'all' или id измерения
+  const [graphPos, setGraphPos] = useState({}) // { [scope]: { 'note:1': [x, y] } }
+  const [graphDraw, setGraphDraw] = useState({}) // { [scope]: { version, elements } }
   const [evModalDay, setEvModalDay] = useState(null)
   const bodyRef = useViewportShift()
   const coarse = useCoarsePointer()
@@ -166,7 +176,7 @@ export default function App() {
     setIfChanged(setPixelRows)(ap)
     setIfChanged(setEvents)(ae)
     if (ad.length) {
-      setIfChanged(setDims)(ad)
+      setIfChanged(setDims)(sortDims(ad))
       setEnabledDims((prev) => {
         const next = new Set(prev)
         let changed = false
@@ -215,12 +225,21 @@ export default function App() {
       await seedIfEmpty()
       await seedDimensions()
       await normalizeDimensions()
-      const ad = await db.dimensions.toArray()
+      const ad = sortDims(await db.dimensions.toArray())
       if (ad.length) {
         setDims(ad)
         setEnabledDims(new Set(ad.map((d) => d.id)))
         ad.forEach((d) => knownDims.current.add(d.id))
       }
+      // граф: сохранённое измерение, позиции узлов и рисунок
+      const rawPos = await getSetting('graphPos', {})
+      const firstPos = Object.values(rawPos || {})[0]
+      setGraphPos(Array.isArray(firstPos) ? { all: rawPos } : rawPos || {})
+      const rawDraw = await getSetting('graphDraw', {})
+      setGraphDraw(Array.isArray(rawDraw?.elements) ? { all: rawDraw } : rawDraw || {})
+      const savedDim = await getSetting('graphDim', 'all')
+      if (typeof savedDim === 'string' && savedDim) setGraphDim(savedDim)
+
       const all = await db.notes.toArray()
       await recalcMissed(all)
       await refresh()
@@ -684,15 +703,26 @@ export default function App() {
     scheduleAutoPush()
   }
 
-  // положение узлов и рисунок поверх графа живут в настройках устройства
+  // у «Все» и у каждого измерения — свои позиции узлов и свой рисунок
   const onGraphPositions = (next) => {
-    setGraphPos(next)
-    setSetting('graphPos', next).catch(() => {})
+    setGraphPos((prev) => {
+      const map = { ...prev, [graphDim]: next }
+      setSetting('graphPos', map).catch(() => {})
+      return map
+    })
   }
 
   const onGraphDraw = (next) => {
-    setGraphDraw(next)
-    setSetting('graphDraw', next).catch(() => {})
+    setGraphDraw((prev) => {
+      const map = { ...prev, [graphDim]: next }
+      setSetting('graphDraw', map).catch(() => {})
+      return map
+    })
+  }
+
+  const onGraphDim = (next) => {
+    setGraphDim(next)
+    setSetting('graphDim', next).catch(() => {})
   }
 
   const weekCells = useMemo(() => {
@@ -1467,16 +1497,19 @@ export default function App() {
           ) : tab === 'graph' ? (
             <div className="graph-host">
               <GraphView
+                key={graphDim}
                 notes={notes}
                 manualLinks={links}
                 dims={dims}
                 enabledDims={enabledDims}
                 activeId={activeId}
                 onOpen={openNote}
-                positions={graphPos}
+                positions={graphPos[graphDim] || {}}
                 onPositionsChange={onGraphPositions}
-                drawData={graphDraw}
+                drawData={graphDraw[graphDim] || { version: 1, elements: [] }}
                 onDrawChange={onGraphDraw}
+                dimFilter={graphDim}
+                onDimFilter={onGraphDim}
               />
             </div>
           ) : tab === 'map' ? (

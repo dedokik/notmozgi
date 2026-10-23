@@ -85,6 +85,8 @@ export default function GraphView({
   onPositionsChange,
   drawData,
   onDrawChange,
+  dimFilter,
+  onDimFilter,
 }) {
   const [tool, setTool] = useState('select') // select | pen | eraser
   const [color, setColor] = useState(PEN_COLORS[1])
@@ -109,10 +111,18 @@ export default function GraphView({
   const gesture = useRef(null)
   const pinch = useRef(null)
 
-  const visible = useMemo(() => notes.filter((n) => enabledDims.has(n.dimension)), [notes, enabledDims])
+  // 'all' — все измерения, иначе показываем только одно (свой цвет = своё измерение)
+  const scope = dimFilter && dimFilter !== 'all' ? dimFilter : null
+  const visible = useMemo(
+    () => notes.filter((n) => enabledDims.has(n.dimension) && (!scope || n.dimension === scope)),
+    [notes, enabledDims, scope]
+  )
   const dimsList = useMemo(
-    () => dims.filter((d) => enabledDims.has(d.id) && visible.some((n) => n.dimension === d.id)),
-    [dims, enabledDims, visible]
+    () =>
+      dims.filter(
+        (d) => enabledDims.has(d.id) && (!scope || d.id === scope) && visible.some((n) => n.dimension === d.id)
+      ),
+    [dims, enabledDims, visible, scope]
   )
   const computed = useMemo(() => computeLayout(visible, dimsList), [visible, dimsList])
   const at = (key) => pos[key] || computed[key] || [0, 0]
@@ -359,16 +369,12 @@ export default function GraphView({
     })
   }
 
-  // первый показ — сразу вписать граф в экран
-  const fitted = useRef(false)
+  // при смене измерения (и при изменении числа заметок) вписываем граф в экран
   useEffect(() => {
-    if (fitted.current || !visible.length) return
-    const t = setTimeout(() => {
-      fit()
-      fitted.current = true
-    }, 80)
+    if (!visible.length) return
+    const t = setTimeout(() => fit(), 80)
     return () => clearTimeout(t)
-  }, [visible.length])
+  }, [scope, visible.length])
 
   const zoomBy = (k) => {
     const r = wrapRef.current.getBoundingClientRect()
@@ -494,6 +500,33 @@ export default function GraphView({
         <button className="cb-tool cb-fit" onClick={fit} title="Показать всё">
           ⤢
         </button>
+
+        <span className="cb-sep" />
+        <div className="gv-dims">
+          <button
+            type="button"
+            className={`gv-dim ${!scope ? 'is-on' : ''}`}
+            onClick={() => onDimFilter?.('all')}
+            title="Все измерения"
+          >
+            Все
+          </button>
+          {dims
+            .filter((d) => enabledDims.has(d.id))
+            .map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                className={`gv-dim ${scope === d.id ? 'is-on' : ''}`}
+                onClick={() => onDimFilter?.(d.id)}
+                style={scope === d.id ? { borderColor: d.color, background: d.color + '22', fontWeight: 700 } : {}}
+                title={`Только «${d.name}»`}
+              >
+                <span className="gv-dim-dot" style={{ background: d.color }} />
+                {d.name}
+              </button>
+            ))}
+        </div>
       </div>
 
       <svg
@@ -614,7 +647,18 @@ export default function GraphView({
         </g>
       </svg>
 
-      {!visible.length && <div className="gv-empty">Нет заметок в выбранных измерениях.</div>}
+      {!visible.length && (
+        <div className="gv-empty">
+          <div>
+            {scope ? 'В этом измерении пока нет заметок.' : 'Нет заметок в выбранных измерениях.'}
+            {scope && (
+              <button type="button" className="chip" style={{ marginLeft: 10 }} onClick={() => onDimFilter?.('all')}>
+                Показать все
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="gv-legend">
         <span>
