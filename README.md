@@ -45,7 +45,8 @@ window.__NOT_CONFIG__ = {
 (`file://`). В Chrome на `file://` заблокирован IndexedDB — база просто не создастся.
 Локально проще всего: `python -m http.server 8000 --directory site`.
 
-Если поменял исходники в `src/` — пересобрать (нужен node, npm не нужен):
+**Если поменял исходники в `src/` — обязательно пересобери `site/`**, иначе
+`npm run build` задеплоит старую версию. Нужен только node, npm не нужен:
 
 ```bash
 node node_modules/esbuild/bin/esbuild build/entry.jsx --bundle --minify \
@@ -64,9 +65,14 @@ node node_modules/@tailwindcss/cli/dist/index.mjs -i src/index.css -o site/app.c
 
 ```bash
 npm install
-npm run dev      # http://<ip-ноутбука>:5173 — открывать с планшета по Wi-Fi
-npm run build    # обычная сборка Vite в dist/
+npm run dev        # http://<ip-ноутбука>:5173 — открывать с планшета по Wi-Fi
+npm run build      # dist/ = копия site/ (то, что уезжает на хостинг)
+npm run build:vite # классическая сборка Vite (если нужен её пайплайн)
 ```
+
+`npm run build` намеренно не запускает Vite: он просто копирует `site/` в `dist/`.
+Так деплой на Cloudflare/Netlify отдаёт ровно ту сборку, которая проверена,
+и не может упасть из-за нативных бинарников или версии Node в CI.
 
 Ключи Supabase для этого варианта — в `.env` (см. `.env.example`).
 Без ключей приложение работает полностью локально.

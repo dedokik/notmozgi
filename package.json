@@ -5,10 +5,17 @@
   "description": "NotMozgi — notes with pinning, canvas boards, calendar pins, offline-first Supabase sync",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "vite build",
+    "build": "node build/copy.mjs",
+    "build:vite": "vite build",
     "preview": "vite preview --host 0.0.0.0"
   },
-  "keywords": ["notes", "pwa", "offline-first", "supabase", "canvas"],
+  "keywords": [
+    "notes",
+    "pwa",
+    "offline-first",
+    "supabase",
+    "canvas"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
