@@ -12,8 +12,8 @@ const BASE_DIM_IDS = BASE_DIMS.map((d) => d.id)
 
 // Ключи берём из двух мест:
 //  1) .env при сборке через Vite (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY)
-//  2) site/config.js — чтобы вписать ключи в готовую сборку руками,
-//     без пересборки и без npm.
+//  2) public/config.js — чтобы вписать ключи руками и запушить,
+//     без пересборки (файл попадает в dist как /config.js).
 const runtimeCfg = (typeof window !== 'undefined' && window.__NOT_CONFIG__) || {}
 const URL = import.meta.env.VITE_SUPABASE_URL || runtimeCfg.supabaseUrl || ''
 const KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || runtimeCfg.supabaseAnonKey || ''

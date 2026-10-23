@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "build:static": "node build/copy.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
   "keywords": [
