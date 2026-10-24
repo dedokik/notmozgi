@@ -66,10 +66,12 @@
         window.addEventListener('error', function (e) {
           if (e && e.target && e.target.tagName === 'SCRIPT') fail()
         }, true)
+        // 10 секунд: на медленной сети бандл ~700 КБ грузится дольше 4 секунд,
+        // и заглушка «не удалось загрузить» срабатывала ложно
         setTimeout(function () {
           var root = document.getElementById('root')
           if (!root || !root.children.length) fail()
-        }, 4000)
+        }, 10000)
       })()
     </script>
   </body>

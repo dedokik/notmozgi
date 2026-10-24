@@ -95,6 +95,7 @@ export function normalizeNote(n) {
   return {
     ...n,
     is_pinned: n.is_pinned ? 1 : 0,
+    deleted: n.deleted ? 1 : 0,
     note_type: n.note_type === 'canvas' ? 'canvas' : 'text',
     updatedAt: typeof n.updatedAt === 'number' ? n.updatedAt : Date.parse(n.updatedAt) || 0,
     estimateHours: Number(n.estimateHours) || 0,
@@ -105,7 +106,12 @@ export function normalizeNote(n) {
 
 export async function listNotes() {
   const all = await db.notes.toArray()
-  return sortNotes(all.map(normalizeNote))
+  return sortNotes(all.map(normalizeNote).filter((n) => !n.deleted))
+}
+
+// все заметки, включая удалённые (для синка и пересчёта плана)
+export async function allNotesRaw() {
+  return db.notes.toArray()
 }
 
 export async function getPinnedNotes() {
@@ -122,6 +128,7 @@ export async function createNote({ title = 'Новая заметка', body = '
     dimension: dim,
     estimateHours: 0,
     is_pinned: 0,
+    deleted: 0,
     note_type,
     canvas_data: note_type === 'canvas' ? emptyCanvas() : null,
     draw_data: null,
@@ -147,9 +154,12 @@ export async function togglePin(id) {
   return next
 }
 
+// Мягкое удаление: ставим deleted=1 вместо физического удаления строки.
+// Иначе удаление не уезжает на другое устройство (и теряется, если в момент
+// удаления не было сети) — облако просто не знает, что заметку убрали.
 export async function deleteNoteDeep(id) {
   await db.transaction('rw', [db.notes, db.links, db.chunks, db.pixels], async () => {
-    await db.notes.delete(id)
+    await db.notes.update(id, { deleted: 1, is_pinned: 0, updatedAt: nowTs() })
     await db.links.where('fromId').equals(id).delete()
     await db.links.where('toId').equals(id).delete()
     await db.chunks.where('noteId').equals(id).delete()

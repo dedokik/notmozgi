@@ -21,7 +21,7 @@ import { parseDeadlines, firstDeadline, fmtDate } from './lib/dates.js'
 import { parseWikiLinks } from './lib/links.js'
 import { buildPlan, recalcMissed, toggleChunk, toggleHabit, todayISO, isHabit, parseEffort } from './lib/chunks.js'
 import * as pixelsLib from './lib/pixels.js'
-import { cloudEnabled, syncNow, cloud, cleanupDuplicates } from './lib/supabase.js'
+import { cloudEnabled, syncNow, cleanupDuplicates } from './lib/supabase.js'
 import GraphView from './components/GraphView.jsx'
 import MapView from './components/MapView.jsx'
 import SyncDiag from './components/SyncDiag.jsx'
@@ -109,6 +109,7 @@ export default function App() {
   const [tab, setTab] = useState('notes') // notes | calendar | graph | map | diag
   const [preview, setPreview] = useState(false)
   const [pinnedOnly, setPinnedOnly] = useState(false)
+  const [query, setQuery] = useState('')
   const [cursor, setCursor] = useState(() => {
     const d = new Date()
     return { y: d.getFullYear(), m: d.getMonth() }
@@ -240,7 +241,7 @@ export default function App() {
       const savedDim = await getSetting('graphDim', 'all')
       if (typeof savedDim === 'string' && savedDim) setGraphDim(savedDim)
 
-      const all = await db.notes.toArray()
+      const all = (await db.notes.toArray()).filter((n) => !n.deleted)
       await recalcMissed(all)
       await refresh()
       // тихий автосинк при старте, чтобы с другого устройства всё подтянулось само
@@ -323,7 +324,7 @@ export default function App() {
       syncing.current = true
       try {
         const r = await syncNow({ quiet: true })
-        const all2 = await db.notes.toArray()
+        const all2 = (await db.notes.toArray()).filter((n) => !n.deleted)
         const t = await recalcMissed(all2)
         if (r.ok || t) await refresh()
         if (r.ok) markSynced()
@@ -406,7 +407,12 @@ export default function App() {
 
   // ---------- список заметок ----------
 
-  const visible = useMemo(() => notes.filter((n) => enabledDims.has(n.dimension)), [notes, enabledDims])
+  const visible = useMemo(() => {
+    const base = notes.filter((n) => enabledDims.has(n.dimension))
+    const q = query.trim().toLowerCase()
+    if (!q) return base
+    return base.filter((n) => `${n.title || ''}\n${n.body || ''}`.toLowerCase().includes(q))
+  }, [notes, enabledDims, query])
   const pinnedList = useMemo(() => visible.filter((n) => n.is_pinned), [visible])
   const otherList = useMemo(() => visible.filter((n) => !n.is_pinned), [visible])
   const shownList = pinnedOnly ? pinnedList : visible
@@ -451,19 +457,9 @@ export default function App() {
 
   const onDeleteNote = async (id, title) => {
     if (!window.confirm(`Удалить «${title || 'Без названия'}»?`)) return
+    // мягкое удаление (deleted=1): флаг уедет в облако и на другие устройства,
+    // даже если сейчас нет сети
     await deleteNoteDeep(id)
-    // иначе удалённая заметка «воскреснет» следующим pull
-    try {
-      const map = await getSetting('cloudIds', {})
-      const cid = map[`note:${id}`]
-      if (cid && cloud()) await cloud().from('notes').delete().eq('id', cid)
-      if (cid) {
-        delete map[`note:${id}`]
-        await setSetting('cloudIds', map)
-      }
-    } catch {
-      /* офлайн — облако подчистится следующим pushRest */
-    }
     if (activeId === id) setActiveId(null)
     await refresh()
     scheduleAutoPush()
@@ -491,6 +487,34 @@ export default function App() {
       }
     } finally {
       syncing.current = false
+    }
+  }
+
+  // бэкап: всё, что лежит в браузере, одним JSON-файлом
+  const exportAll = async () => {
+    try {
+      const data = {
+        app: 'notmozgi',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        notes: await db.notes.toArray(),
+        events: await db.events.toArray(),
+        links: await db.links.toArray(),
+        chunks: await db.chunks.toArray(),
+        dimensions: await db.dimensions.toArray(),
+      }
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `notmozgi-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 3000)
+      setSyncMsg(`Экспорт: ${data.notes.filter((n) => !n.deleted).length} заметок, ${data.events.length} событий`)
+    } catch (e) {
+      setSyncMsg(`Экспорт не удался: ${e.message}`)
     }
   }
 
@@ -861,6 +885,14 @@ export default function App() {
           } md:translate-x-0`}
         >
           <div className="p-3 border-b" style={{ borderColor: 'var(--border)' }}>
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Поиск по заметкам…"
+              className="w-full rounded px-3 py-2 text-sm mb-3"
+              aria-label="Поиск по заметкам"
+            />
             <div className="text-xs uppercase opacity-50 mb-2">Измерения</div>
             {dims.map((d) => (
               <div key={d.id} className="flex items-center gap-2 py-1.5 text-sm">
@@ -940,6 +972,14 @@ export default function App() {
                 Дубли
               </button>
             </div>
+
+            <button
+              onClick={exportAll}
+              className="w-full mt-2 text-xs py-1.5 rounded panel opacity-70"
+              title="Скачать все данные в JSON (бэкап)"
+            >
+              ⤓ Экспорт данных
+            </button>
           </div>
 
           <div className="flex-1 overflow-auto p-2">
@@ -959,7 +999,9 @@ export default function App() {
                 )}
                 {otherList.map(renderCard)}
                 {shownList.length === 0 && (
-                  <div className="text-sm opacity-50 p-2">Нет заметок. Включи измерения или создай новую.</div>
+                  <div className="text-sm opacity-50 p-2">
+                    {query.trim() ? `По запросу «${query.trim()}» ничего не найдено.` : 'Нет заметок. Включи измерения или создай новую.'}
+                  </div>
                 )}
               </>
             )}

@@ -82,6 +82,7 @@ export const hashNote = (n) =>
     n.dimension || '',
     Number(n.estimateHours) || 0,
     n.is_pinned ? 1 : 0,
+    n.deleted ? 1 : 0,
     n.note_type || 'text',
     canvasKey(n),
     drawKey(n),
@@ -97,7 +98,7 @@ export async function markPushed(localId, note) {
 function isMissingColumn(err) {
   if (!err) return false
   const t = `${err.code || ''} ${err.message || ''} ${err.details || ''}`
-  return /(is_pinned|note_type|canvas_data|draw_data)/i.test(t) && /(column|schema cache|does not exist|PGRST204|42703)/i.test(t)
+  return /(is_pinned|note_type|canvas_data|draw_data|deleted)/i.test(t) && /(column|schema cache|does not exist|PGRST204|42703)/i.test(t)
 }
 
 function noteRow(n, withV2) {
@@ -110,6 +111,7 @@ function noteRow(n, withV2) {
   }
   if (withV2) {
     row.is_pinned = !!n.is_pinned
+    row.deleted = !!n.deleted
     row.note_type = n.note_type === 'canvas' ? 'canvas' : 'text'
     row.canvas_data = n.canvas_data || null
     row.draw_data = n.draw_data || null
@@ -185,6 +187,7 @@ async function pullNotes(sb) {
     dimension: r.dimension,
     estimateHours: Number(r.estimate_hours) || 0,
     is_pinned: r.is_pinned ? 1 : 0,
+    deleted: r.deleted ? 1 : 0,
     note_type: r.note_type === 'canvas' ? 'canvas' : 'text',
     canvas_data: r.canvas_data || null,
     draw_data: r.draw_data || null,
@@ -196,6 +199,20 @@ async function pullNotes(sb) {
   for (const r of data) {
     const localKey = rev[r.id]
     const patch = patchOf(r)
+
+    // удалили на другом устройстве — удаляем и здесь, спорить не о чем
+    if (patch.deleted) {
+      if (localKey && localKey.startsWith('note:')) {
+        const id = Number(localKey.slice(5))
+        const local = await db.notes.get(id)
+        if (local && !local.deleted) {
+          await db.notes.update(id, { deleted: 1, updatedAt: patch.updatedAt })
+          await logSync(`pull -note:${id} (удалена на другом устройстве)`)
+          n++
+        }
+      }
+      continue
+    }
 
     if (localKey && localKey.startsWith('note:')) {
       const id = Number(localKey.slice(5))
@@ -500,7 +517,7 @@ export async function syncNow(opts = {}) {
 // остальные удаляются локально и в облаке. Запускать на КАЖДОМ устройстве.
 export async function cleanupDuplicates() {
   const sb = cloud()
-  const all = await db.notes.toArray()
+  const all = (await db.notes.toArray()).filter((n) => !n.deleted)
   const byTitle = new Map()
   for (const n of all) {
     const t = (n.title || '').trim().toLowerCase()
@@ -543,7 +560,7 @@ export async function cleanupDuplicates() {
     for (const r of allCloud || []) {
       const isMapped = Object.values(map).includes(r.id)
       if (isMapped) continue
-      const locals = await db.notes.toArray()
+      const locals = (await db.notes.toArray()).filter((l) => !l.deleted)
       const twin = locals.find(
         (l) => (l.title || '').trim().toLowerCase() === (r.title || '').trim().toLowerCase()
       )

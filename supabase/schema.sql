@@ -37,6 +37,8 @@ alter table public.notes add column if not exists note_type   text    not null d
 alter table public.notes add column if not exists canvas_data jsonb;
 -- рисунок поверх текста (штрихи стилусом по заметке)
 alter table public.notes add column if not exists draw_data  jsonb;
+-- мягкое удаление: чтобы удаление расходилось по устройствам, а не терялось
+alter table public.notes add column if not exists deleted    boolean not null default false;
 alter table public.notes alter column dimension set default 'ya';
 
 -- если раньше запускали «сырую» миграцию, там могли остаться NULL
