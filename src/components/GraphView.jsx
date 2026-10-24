@@ -18,34 +18,32 @@ const uid = () => `s${Date.now().toString(36)}${Math.random().toString(36).slice
 
 // Раскладка без физики: хабы измерений по кругу, заметки — кольцами вокруг хаба.
 // Детерминированная, поэтому рисунок поверх графа остаётся на месте.
+// Раскладка: хабы измерений по кругу, заметки — спиралью Фибоначчи вокруг
+// своего хаба. Спираль равномерно заполняет площадь, поэтому 10 заметок и 200
+// выглядят одинаково аккуратно (кольца при 50+ наезжали друг на друга).
+const GOLDEN = 2.399963229728653
+const SPACING = 58
+
 function computeLayout(notes, dimsList) {
   const out = {}
   const n = dimsList.length || 1
-  const ringR = n === 1 ? 0 : 360
+  const perDim = dimsList.map((d) => notes.filter((x) => x.dimension === d.id))
+
+  // радиус, который занимает самое большое измерение
+  const maxExtent = perDim.reduce((m, list) => Math.max(m, SPACING * Math.sqrt(list.length + 1) + 70), 90)
+  const hubRing = n === 1 ? 0 : Math.max(340, maxExtent + 120)
 
   dimsList.forEach((d, di) => {
     const a = n === 1 ? 0 : (di / n) * Math.PI * 2 - Math.PI / 2
-    const hx = Math.cos(a) * ringR
-    const hy = Math.sin(a) * ringR
+    const hx = Math.cos(a) * hubRing
+    const hy = Math.sin(a) * hubRing
     out[`dim:${d.id}`] = [hx, hy]
 
-    const list = notes.filter((x) => x.dimension === d.id)
-    let inRing = 0
-    let ring = 0
-    let capacity = 8
-    let radius = 150
-
-    for (const note of list) {
-      if (inRing >= capacity) {
-        ring++
-        inRing = 0
-        capacity = 8 + ring * 4
-        radius = 150 + ring * 105
-      }
-      const ang = (inRing / capacity) * Math.PI * 2 + (ring % 2 ? 0.35 : 0)
-      out[`note:${note.id}`] = [hx + Math.cos(ang) * radius, hy + Math.sin(ang) * radius]
-      inRing++
-    }
+    perDim[di].forEach((note, i) => {
+      const ang = i * GOLDEN
+      const r = SPACING * Math.sqrt(i + 0.55)
+      out[`note:${note.id}`] = [hx + Math.cos(ang) * r, hy + Math.sin(ang) * r]
+    })
   })
   return out
 }
@@ -125,6 +123,12 @@ export default function GraphView({
     [dims, enabledDims, visible, scope]
   )
   const computed = useMemo(() => computeLayout(visible, dimsList), [visible, dimsList])
+
+  // чем больше заметок, тем мельче узлы и подписи — иначе граф превращается в кашу
+  const density = visible.length
+  const nodeR = density > 90 ? 11 : density > 50 ? 14 : density > 24 ? 18 : NODE_R
+  const showLabels = density <= 45
+  const labelSize = density > 30 ? 10 : 12
   const at = (key) => pos[key] || computed[key] || [0, 0]
 
   // настройки графа читаются из базы асинхронно: если граф успел открыться
@@ -212,7 +216,7 @@ export default function GraphView({
     }
     for (const n of visible) {
       const [x, y] = at(`note:${n.id}`)
-      if (Math.hypot(p.x - x, p.y - y) <= NODE_R) return { kind: 'note', id: n.id }
+      if (Math.hypot(p.x - x, p.y - y) <= nodeR) return { kind: 'note', id: n.id }
     }
     return null
   }
@@ -625,22 +629,31 @@ export default function GraphView({
             return (
               <g key={`n-${n.id}`}>
                 {isActive && (
-                  <circle cx={x} cy={y} r={NODE_R + 5} fill="none" stroke="var(--accent)" strokeWidth={2} />
+                  <circle cx={x} cy={y} r={nodeR + 4} fill="none" stroke="var(--accent)" strokeWidth={2} />
                 )}
-                <circle cx={x} cy={y} r={NODE_R} fill={c} opacity={n.is_pinned ? 0.95 : 0.75} />
-                {n.note_type === 'canvas' && (
+                <circle cx={x} cy={y} r={nodeR} fill={c} opacity={n.is_pinned ? 0.95 : 0.75} />
+                {n.note_type === 'canvas' && nodeR > 15 && (
                   <text x={x} y={y + 5} textAnchor="middle" fontSize={14} fill="#0d0d10">
                     🎨
                   </text>
                 )}
                 {!!n.is_pinned && (
-                  <text x={x + NODE_R - 2} y={y - NODE_R + 4} textAnchor="middle" fontSize={13}>
+                  <text x={x + nodeR - 2} y={y - nodeR + 4} textAnchor="middle" fontSize={13}>
                     📌
                   </text>
                 )}
-                <text x={x} y={y + NODE_R + 15} textAnchor="middle" fontSize={12} fill="var(--text)" opacity={0.85}>
-                  {shortTitle(n.title)}
-                </text>
+                {showLabels && (
+                  <text
+                    x={x}
+                    y={y + nodeR + 14}
+                    textAnchor="middle"
+                    fontSize={labelSize}
+                    fill="var(--text)"
+                    opacity={0.85}
+                  >
+                    {shortTitle(n.title, density > 30 ? 14 : 20)}
+                  </text>
+                )}
               </g>
             )
           })}

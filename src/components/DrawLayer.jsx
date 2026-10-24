@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react'
+import { forwardRef, useImperativeHandle, useRef, useState } from 'react'
+import { shiftStrokes } from '../lib/textshift.js'
 
 // Слой рисования поверх текста заметки: текст остаётся видимым,
 // сверху можно писать стилусом (пометки, обводки, стрелки).
@@ -29,7 +30,7 @@ function strokeHit(el, p, tol) {
   return false
 }
 
-export default function DrawLayer({ active, value, onChange }) {
+const DrawLayer = forwardRef(function DrawLayer({ active, value, onChange }, ref) {
   const [elements, setElements] = useState(() => (value?.elements ? value.elements : []))
   const [color, setColor] = useState(COLORS[1])
   const [width, setWidth] = useState(4)
@@ -50,6 +51,14 @@ export default function DrawLayer({ active, value, onChange }) {
     elsRef.current = next
     onChange?.({ version: 1, elements: next })
   }
+
+  // сдвиг рисунка, когда текст выше изменился (см. lib/textshift.js)
+  useImperativeHandle(ref, () => ({
+    shift(fromY, deltaY) {
+      const next = shiftStrokes(elsRef.current, fromY, deltaY)
+      if (next) save(next)
+    },
+  }))
 
   const snapshot = () => {
     past.current.push(elsRef.current)
@@ -241,4 +250,6 @@ export default function DrawLayer({ active, value, onChange }) {
       )}
     </div>
   )
-}
+})
+
+export default DrawLayer

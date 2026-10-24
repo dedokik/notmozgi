@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import {
   db,
   DIMENSIONS as DEFAULT_DIMS,
@@ -21,16 +20,29 @@ import { parseDeadlines, firstDeadline, fmtDate } from './lib/dates.js'
 import { parseWikiLinks } from './lib/links.js'
 import { buildPlan, recalcMissed, toggleChunk, toggleHabit, todayISO, isHabit, parseEffort } from './lib/chunks.js'
 import * as pixelsLib from './lib/pixels.js'
-import { cloudEnabled, syncNow, cleanupDuplicates } from './lib/supabase.js'
-import GraphView from './components/GraphView.jsx'
+import {
+  cloudEnabled,
+  syncNow,
+  cleanupDuplicates,
+  authSession,
+  authSignIn,
+  authSignUp,
+  authSignOut,
+  onAuthChange,
+} from './lib/supabase.js'
 import MapView from './components/MapView.jsx'
-import SyncDiag from './components/SyncDiag.jsx'
 import DrawLayer from './components/DrawLayer.jsx'
 import EventModal from './components/EventModal.jsx'
 import NoteCard from './components/NoteCard.jsx'
-import CanvasBoard from './components/CanvasBoard.jsx'
+import { computeShift } from './lib/textshift.js'
+
+// тяжёлое грузим отдельными кусками: первый экран открывается быстрее
+const GraphView = lazy(() => import('./components/GraphView.jsx'))
+const SyncDiag = lazy(() => import('./components/SyncDiag.jsx'))
+const CanvasBoard = lazy(() => import('./components/CanvasBoard.jsx'))
+const ReactMarkdown = lazy(() => import('react-markdown'))
 import { useViewportShift, useCoarsePointer } from './hooks/tablet.js'
-import { checkDeadlines, checkCalendarEvents } from './lib/notify.js'
+import { checkDeadlines, checkCalendarEvents, notifyDigest } from './lib/notify.js'
 
 function getTasks(body) {
   return (body || '')
@@ -109,7 +121,9 @@ export default function App() {
   const [tab, setTab] = useState('notes') // notes | calendar | graph | map | diag
   const [preview, setPreview] = useState(false)
   const [pinnedOnly, setPinnedOnly] = useState(false)
+  const [queryInput, setQueryInput] = useState('')
   const [query, setQuery] = useState('')
+  const [listLimit, setListLimit] = useState(60)
   const [cursor, setCursor] = useState(() => {
     const d = new Date()
     return { y: d.getFullYear(), m: d.getMonth() }
@@ -118,6 +132,16 @@ export default function App() {
   const [calView, setCalView] = useState('month')
   const [weekAnchor, setWeekAnchor] = useState(() => new Date())
   const [syncMsg, setSyncMsg] = useState('')
+  // аккаунт: облако работает только под своим пользователем
+  const [session, setSession] = useState(null)
+  const [authReady, setAuthReady] = useState(!cloudEnabled)
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authError, setAuthError] = useState('')
+  const [authNotice, setAuthNotice] = useState('')
+  const [authMode, setAuthMode] = useState('in') // 'in' | 'up'
+  const [authEmail, setAuthEmail] = useState('')
+  const [authPass, setAuthPass] = useState('')
+  const [localOnly, setLocalOnly] = useState(false)
   const [lastSyncAt, setLastSyncAt] = useState('')
   const [notifState, setNotifState] = useState(() =>
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
@@ -131,6 +155,8 @@ export default function App() {
   const [graphDraw, setGraphDraw] = useState({}) // { [scope]: { version, elements } }
   const [evModalDay, setEvModalDay] = useState(null)
   const bodyRef = useViewportShift()
+  const drawRef = useRef(null)
+  const measureRef = useRef(null)
   const coarse = useCoarsePointer()
 
   const [draft, setDraft] = useState(null)
@@ -222,6 +248,65 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (!cloudEnabled) return
+    let alive = true
+    ;(async () => {
+      const s = await authSession()
+      if (!alive) return
+      setSession(s)
+      setAuthReady(true)
+    })()
+    const off = onAuthChange((s) => {
+      setSession(s)
+      setAuthReady(true)
+    })
+    return () => {
+      alive = false
+      off()
+    }
+  }, [])
+
+  const doSignIn = async () => {
+    setAuthBusy(true)
+    setAuthError('')
+    setAuthNotice('')
+    try {
+      const s = await authSignIn(authEmail.trim(), authPass)
+      setSession(s)
+      setAuthPass('')
+    } catch (e) {
+      setAuthError(e.message)
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const doSignUp = async () => {
+    setAuthBusy(true)
+    setAuthError('')
+    setAuthNotice('')
+    try {
+      const r = await authSignUp(authEmail.trim(), authPass)
+      if (r.needsConfirm) {
+        setAuthNotice('Аккаунт создан. Подтверди почту по ссылке из письма и войди.')
+      } else {
+        setSession(r.session)
+        setAuthPass('')
+      }
+    } catch (e) {
+      setAuthError(e.message)
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const doSignOut = async () => {
+    await authSignOut()
+    setSession(null)
+    setSyncMsg('Вышли из аккаунта — данные остались на устройстве')
+  }
+
+  useEffect(() => {
     ;(async () => {
       await seedIfEmpty()
       await seedDimensions()
@@ -243,7 +328,14 @@ export default function App() {
 
       const all = (await db.notes.toArray()).filter((n) => !n.deleted)
       await recalcMissed(all)
-      await refresh()
+      const freshNotes = await refresh()
+      // браузер не будит закрытое приложение — показываем накопившееся при запуске
+      try {
+        const freshEvents = (await db.events.toArray()).filter((e) => !e.deleted)
+        await notifyDigest(freshNotes, freshEvents)
+      } catch {
+        /* уведомления не критичны */
+      }
       // тихий автосинк при старте, чтобы с другого устройства всё подтянулось само
       if (cloudEnabled) {
         const r = await syncNow({ quiet: true })
@@ -336,6 +428,15 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
 
+  // поиск с небольшой задержкой: не фильтруем список на каждую букву
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setQuery(queryInput)
+      setListLimit(60)
+    }, 200)
+    return () => clearTimeout(t)
+  }, [queryInput])
+
   const active = useMemo(() => notes.find((n) => n.id === activeId) || null, [notes, activeId])
 
   useEffect(() => {
@@ -353,6 +454,46 @@ export default function App() {
     el.style.height = 'auto'
     el.style.height = `${Math.max(240, el.scrollHeight)}px`
   }, [draft?.body, draft?.id, hwMode, preview, drawMode])
+
+  // сколько пикселей занимает текст до позиции idx (с учётом переносов строк):
+  // меряем скрытым div с теми же стилями, что у textarea
+  const measureY = (text, idx) => {
+    const ta = bodyRef.current
+    if (!ta) return 0
+    let el = measureRef.current
+    if (!el) {
+      el = document.createElement('div')
+      el.setAttribute('aria-hidden', 'true')
+      document.body.appendChild(el)
+      measureRef.current = el
+    }
+    const cs = getComputedStyle(ta)
+    el.style.position = 'absolute'
+    el.style.left = '-9999px'
+    el.style.top = '0'
+    el.style.visibility = 'hidden'
+    el.style.pointerEvents = 'none'
+    el.style.whiteSpace = 'pre-wrap'
+    el.style.overflowWrap = 'break-word'
+    el.style.fontFamily = cs.fontFamily
+    el.style.fontSize = cs.fontSize
+    el.style.lineHeight = cs.lineHeight
+    el.style.letterSpacing = cs.letterSpacing
+    el.style.padding = cs.padding
+    el.style.boxSizing = cs.boxSizing
+    el.style.width = `${ta.clientWidth}px`
+    el.textContent = text.slice(0, idx) + '\u200b'
+    return el.scrollHeight
+  }
+
+  // правка текста: если что-то изменилось ВЫШЕ рисунка — двигаем штрихи,
+  // чтобы они остались привязанными к своим строкам
+  const handleBodyChange = (next) => {
+    if (!draft) return
+    const shift = computeShift(draft.body, next, measureY)
+    if (shift) drawRef.current?.shift(shift.fromY, shift.deltaY)
+    setDraft({ ...draft, body: next })
+  }
 
   // автосохранение черновика (текст и холст — одинаково).
   // Перед записью сверяемся с базой: открытие заметки не должно менять updatedAt
@@ -675,6 +816,21 @@ export default function App() {
     return s
   }, [events, notesWithDates])
 
+  // счётчик на иконке приложения (Android/PWA): сколько висит на сегодня
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.setAppBadge) return
+    const today = todayISO()
+    const due = notesWithDates.filter(({ dl }) => dayKey(dl.date) <= today).length
+    const evs = events.filter((e) => !e.deleted && e.date === today).length
+    const n = due + evs
+    try {
+      if (n > 0) navigator.setAppBadge(n).catch(() => {})
+      else navigator.clearAppBadge?.().catch(() => {})
+    } catch {
+      /* не поддерживается — не критично */
+    }
+  }, [notesWithDates, events])
+
   const focusDay = selectedDay || new Date()
   const focusKey = dayKey(focusDay)
   const focusChunks = chunksByDate[focusKey] || []
@@ -813,6 +969,88 @@ export default function App() {
     )
   }
 
+  // облако настроено, но вход не выполнен — показываем экран входа.
+  // Пока сессия проверяется, приложение не показываем: иначе на секунду
+  // мелькают заметки, а потом появляется логин.
+  if (cloudEnabled && !localOnly && !session && !authReady) {
+    return (
+      <div className="h-full flex items-center justify-center opacity-60" style={{ background: 'var(--bg)' }}>
+        Проверяю вход…
+      </div>
+    )
+  }
+
+  if (cloudEnabled && !localOnly && !session) {
+    const submit = () => (authMode === 'in' ? doSignIn() : doSignUp())
+    return (
+      <div className="h-full flex items-center justify-center p-4" style={{ background: 'var(--bg)' }}>
+        <div className="panel rounded p-5 w-full" style={{ maxWidth: 420 }}>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-3 h-3 rounded-sm accent-bg" />
+            <b className="text-lg">NotMozgi</b>
+          </div>
+          <div className="text-sm opacity-60 mb-4">
+            Войди, чтобы синхронизировать заметки. Без входа приложение работает только
+            на этом устройстве.
+          </div>
+
+          <input
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            placeholder="почта"
+            value={authEmail}
+            onChange={(e) => setAuthEmail(e.target.value)}
+            className="w-full rounded px-3 py-3 text-base mb-2"
+          />
+          <input
+            type="password"
+            autoComplete={authMode === 'in' ? 'current-password' : 'new-password'}
+            placeholder="пароль (минимум 6 символов)"
+            value={authPass}
+            onChange={(e) => setAuthPass(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') submit()
+            }}
+            className="w-full rounded px-3 py-3 text-base mb-3"
+          />
+
+          {authError && <div className="text-sm danger-text mb-2">{authError}</div>}
+          {authNotice && <div className="text-sm mb-2" style={{ color: '#86efac' }}>{authNotice}</div>}
+
+          <button
+            onClick={submit}
+            disabled={authBusy || !authEmail.trim() || authPass.length < 6}
+            className="w-full py-3 rounded accent-bg text-black font-bold"
+            style={authBusy || !authEmail.trim() || authPass.length < 6 ? { opacity: 0.5 } : undefined}
+          >
+            {authBusy ? 'Подожди…' : authMode === 'in' ? 'Войти' : 'Создать аккаунт'}
+          </button>
+
+          <div className="flex items-center justify-between mt-3 text-sm">
+            <button
+              onClick={() => {
+                setAuthMode(authMode === 'in' ? 'up' : 'in')
+                setAuthError('')
+                setAuthNotice('')
+              }}
+              className="underline opacity-70"
+            >
+              {authMode === 'in' ? 'Создать аккаунт' : 'У меня уже есть аккаунт'}
+            </button>
+            <button onClick={() => setLocalOnly(true)} className="underline opacity-70">
+              Без облака
+            </button>
+          </div>
+
+          <div className="text-xs opacity-40 mt-4">
+            Данные видны только владельцу аккаунта — на сервере включены правила доступа.
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="h-full flex flex-col" style={{ background: 'var(--bg)' }}>
       {/* ---------- верхняя панель ---------- */}
@@ -845,6 +1083,11 @@ export default function App() {
           </button>
         ))}
 
+        {session && (
+          <button onClick={doSignOut} className="tab-btn" title={`Выйти (${session.user?.email || ''})`}>
+            ⎋ {session.user?.email?.split('@')[0] || 'выйти'}
+          </button>
+        )}
         <button onClick={doSync} className="tab-btn" title="Синхронизация с Supabase">
           {cloudEnabled ? 'Синк' : 'Локально'}
         </button>
@@ -887,11 +1130,14 @@ export default function App() {
           <div className="p-3 border-b" style={{ borderColor: 'var(--border)' }}>
             <input
               type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              value={queryInput}
+              onChange={(e) => setQueryInput(e.target.value)}
               placeholder="Поиск по заметкам…"
               className="w-full rounded px-3 py-2 text-sm mb-3"
               aria-label="Поиск по заметкам"
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setQueryInput('')
+              }}
             />
             <div className="text-xs uppercase opacity-50 mb-2">Измерения</div>
             {dims.map((d) => (
@@ -997,7 +1243,15 @@ export default function App() {
                     {otherList.length > 0 && <div className="list-section">Все заметки · {otherList.length}</div>}
                   </>
                 )}
-                {otherList.map(renderCard)}
+                {otherList.slice(0, listLimit).map(renderCard)}
+                {otherList.length > listLimit && (
+                  <button
+                    onClick={() => setListLimit((v) => v + 100)}
+                    className="w-full text-xs py-2 rounded panel opacity-70 mt-1"
+                  >
+                    Показать ещё · осталось {otherList.length - listLimit}
+                  </button>
+                )}
                 {shownList.length === 0 && (
                   <div className="text-sm opacity-50 p-2">
                     {query.trim() ? `По запросу «${query.trim()}» ничего не найдено.` : 'Нет заметок. Включи измерения или создай новую.'}
@@ -1010,6 +1264,7 @@ export default function App() {
 
         {/* ---------- контент ---------- */}
         <main className="flex-1 min-w-0 p-4 overflow-auto pad-bottom">
+          <Suspense fallback={<div className="opacity-50 p-4">Загрузка…</div>}>
           {tab === 'notes' ? (
             !draft ? (
               <div className="opacity-50">Выбери заметку слева или создай новую.</div>
@@ -1134,7 +1389,7 @@ export default function App() {
                         <textarea
                           ref={bodyRef}
                           value={draft.body}
-                          onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+                          onChange={(e) => handleBodyChange(e.target.value)}
                           readOnly={drawMode}
                           rows={hwMode ? 20 : 12}
                           className={`draw-page-text w-full rounded p-3 font-mono text-sm ${hwMode ? 'hw-textarea' : ''}`}
@@ -1145,6 +1400,7 @@ export default function App() {
                           }
                         />
                         <DrawLayer
+                          ref={drawRef}
                           key={draft.id}
                           active={drawMode}
                           value={draft.draw_data}
@@ -1561,6 +1817,7 @@ export default function App() {
               <SyncDiag onSynced={refresh} />
             </div>
           )}
+          </Suspense>
         </main>
       </div>
 

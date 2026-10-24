@@ -95,3 +95,37 @@ export async function checkCalendarEvents(events) {
   }
   return n
 }
+
+// Сводка при запуске: браузер не может разбудить закрытое приложение без
+// push-сервера, поэтому всё «накопившееся» показываем одним уведомлением,
+// когда приложение открыли. Плюс счётчик на иконке (см. App).
+export async function notifyDigest(notes, events) {
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return 0
+  const todayKey = dayKey(new Date())
+  if ((await getSetting('digestDay', '')) === todayKey) return 0
+
+  let overdue = 0
+  let dueToday = 0
+  for (const note of notes || []) {
+    const dl = parseDeadlines(`${note.title || ''}\n${note.body || ''}`)[0]
+    if (!dl) continue
+    const left = daysLeft(dl.date)
+    if (left < 0) overdue++
+    else if (left === 0) dueToday++
+  }
+  const todayEvents = (events || []).filter((e) => !e.deleted && e.date === todayKey).length
+
+  const parts = []
+  if (overdue) parts.push(`просрочено: ${overdue}`)
+  if (dueToday) parts.push(`дедлайн сегодня: ${dueToday}`)
+  if (todayEvents) parts.push(`событий сегодня: ${todayEvents}`)
+
+  await setSetting('digestDay', todayKey)
+  if (!parts.length) return 0
+  try {
+    new Notification('NotMozgi — сводка', { body: parts.join(' · '), tag: 'digest' })
+    return overdue + dueToday + todayEvents
+  } catch {
+    return 0
+  }
+}

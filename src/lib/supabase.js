@@ -37,6 +37,62 @@ export function cloud() {
   return client
 }
 
+// === Аккаунт ===
+// Синк работает только под своим аккаунтом: anon-ключ публичен по определению,
+// и без входа любой, кто откроет сайт, увидел бы те же данные.
+
+export async function authSession() {
+  const sb = cloud()
+  if (!sb) return null
+  try {
+    const { data } = await sb.auth.getSession()
+    return data?.session || null
+  } catch {
+    return null
+  }
+}
+
+export async function authSignIn(email, password) {
+  const sb = cloud()
+  if (!sb) throw new Error('Облако не настроено')
+  const { error } = await sb.auth.signInWithPassword({ email, password })
+  if (error) throw new Error(error.message)
+  return authSession()
+}
+
+export async function authSignUp(email, password) {
+  const sb = cloud()
+  if (!sb) throw new Error('Облако не настроено')
+  const { data, error } = await sb.auth.signUp({ email, password })
+  if (error) throw new Error(error.message)
+  // если в проекте включено подтверждение почты, сессии сразу не будет
+  if (!data.session) return { session: null, needsConfirm: true }
+  return { session: data.session, needsConfirm: false }
+}
+
+export async function authSignOut() {
+  const sb = cloud()
+  if (!sb) return
+  try {
+    await sb.auth.signOut()
+  } catch {
+    /* уже вышли */
+  }
+}
+
+export function onAuthChange(cb) {
+  const sb = cloud()
+  if (!sb) return () => {}
+  const { data } = sb.auth.onAuthStateChange((_event, session) => cb(session))
+  return () => {
+    try {
+      data?.subscription?.unsubscribe()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 // Облако поддерживает поля v2? Проверяется один раз по факту ошибки.
 let cloudV2 = true
 
@@ -491,6 +547,8 @@ async function pullEvents(sb) {
 export async function syncNow(opts = {}) {
   const sb = cloud()
   if (!sb) return { ok: false, reason: 'Нет VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (.env)' }
+  const session = await authSession()
+  if (!session) return { ok: false, reason: 'Нужен вход в аккаунт' }
   try {
     await pushDimensions(sb)
     await pushNotes(sb)

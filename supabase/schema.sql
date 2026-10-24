@@ -125,10 +125,22 @@ create index if not exists idx_events_day       on public.events (day);
 create index if not exists idx_events_pinned    on public.events (is_pinned desc, day);
 create index if not exists idx_chunks_note      on public.chunks (note_id, day);
 
--- ---------- 9. RLS ----------
--- ВАЖНО: политики «allow all» дают полный доступ всем, у кого есть anon-ключ.
--- Это осознанный выбор для личного single-user приложения.
--- Если планируешь несколько пользователей — замени на auth.uid()-политики.
+-- ---------- 9. Аккаунты и доступ ----------
+-- anon-ключ публичен (он лежит в бандле сайта), поэтому доступ к строкам
+-- ограничен владельцем: user_id = auth.uid(). Без входа данные не видны никому,
+-- и чужой человек, открывший сайт, увидит только пустое приложение.
+alter table public.notes  add column if not exists user_id uuid default auth.uid();
+alter table public.events add column if not exists user_id uuid default auth.uid();
+alter table public.links  add column if not exists user_id uuid default auth.uid();
+alter table public.chunks add column if not exists user_id uuid default auth.uid();
+alter table public.pixels add column if not exists user_id uuid default auth.uid();
+
+-- пиксели: ключ теперь (пользователь, x, y)
+delete from public.pixels where user_id is null;
+alter table public.pixels alter column user_id set not null;
+alter table public.pixels drop constraint if exists pixels_pkey;
+alter table public.pixels add primary key (user_id, x, y);
+
 alter table public.notes      enable row level security;
 alter table public.events     enable row level security;
 alter table public.pixels     enable row level security;
@@ -136,25 +148,41 @@ alter table public.dimensions enable row level security;
 alter table public.links      enable row level security;
 alter table public.chunks     enable row level security;
 
+-- старые политики «allow all» больше не нужны
 drop policy if exists "allow all" on public.notes;
 drop policy if exists "allow all" on public.events;
 drop policy if exists "allow all" on public.pixels;
 drop policy if exists "allow all" on public.dimensions;
 drop policy if exists "allow all" on public.links;
 drop policy if exists "allow all" on public.chunks;
+drop policy if exists "own notes" on public.notes;
+drop policy if exists "own events" on public.events;
+drop policy if exists "own pixels" on public.pixels;
+drop policy if exists "own links" on public.links;
+drop policy if exists "own chunks" on public.chunks;
+drop policy if exists "dimensions for signed in" on public.dimensions;
 
-create policy "allow all" on public.notes
-  for all to anon, authenticated using (true) with check (true);
-create policy "allow all" on public.events
-  for all to anon, authenticated using (true) with check (true);
-create policy "allow all" on public.pixels
-  for all to anon, authenticated using (true) with check (true);
-create policy "allow all" on public.dimensions
-  for all to anon, authenticated using (true) with check (true);
-create policy "allow all" on public.links
-  for all to anon, authenticated using (true) with check (true);
-create policy "allow all" on public.chunks
-  for all to anon, authenticated using (true) with check (true);
+create policy "own notes" on public.notes
+  for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "own events" on public.events
+  for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "own pixels" on public.pixels
+  for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "own links" on public.links
+  for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "own chunks" on public.chunks
+  for all to authenticated using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- измерения общие (три фиксированные строки), но тоже только для вошедших
+create policy "dimensions for signed in" on public.dimensions
+  for all to authenticated using (true) with check (true);
+
+-- анонимный доступ закрываем полностью
+revoke all on public.notes, public.events, public.links, public.chunks, public.pixels
+  from anon;
+revoke all on public.dimensions from anon;
+grant select, insert, update, delete on public.notes, public.events, public.links,
+  public.chunks, public.pixels, public.dimensions to authenticated;
 
 -- ---------- 10. Проверка ----------
 -- Должно вернуть 3 измерения и по строке на каждую таблицу.
