@@ -28,8 +28,8 @@ import {
   authSignIn,
   authSignUp,
   authSignOut,
-  onAuthChange,
-} from './lib/supabase.js'
+  subscribeAuth,
+} from './lib/cloud.js'
 import MapView from './components/MapView.jsx'
 import DrawLayer from './components/DrawLayer.jsx'
 import EventModal from './components/EventModal.jsx'
@@ -256,13 +256,17 @@ export default function App() {
       setSession(s)
       setAuthReady(true)
     })()
-    const off = onAuthChange((s) => {
+    let off = null
+    subscribeAuth((s) => {
       setSession(s)
       setAuthReady(true)
+    }).then((fn) => {
+      if (alive) off = fn
+      else fn?.()
     })
     return () => {
       alive = false
-      off()
+      off?.()
     }
   }, [])
 
