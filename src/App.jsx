@@ -8,6 +8,8 @@ import {
   getSetting,
   setSetting,
   listNotes,
+  sortNotes,
+  normalizeNote,
   togglePin,
   createNote as createNoteRow,
   updateNote,
@@ -35,6 +37,7 @@ import DrawLayer from './components/DrawLayer.jsx'
 import EventModal from './components/EventModal.jsx'
 import NoteCard from './components/NoteCard.jsx'
 import { computeShift } from './lib/textshift.js'
+import { makeNoteCache } from './lib/noteindex.js'
 
 // тяжёлое грузим отдельными кусками: первый экран открывается быстрее
 const GraphView = lazy(() => import('./components/GraphView.jsx'))
@@ -65,6 +68,10 @@ function toggleTaskLine(body, lineIdx) {
 
 // суммы часов без мусора типа 0.30000000000000004
 const f1 = (x) => Math.round(x * 10) / 10
+
+// превью очень длинной заметки: markdown-разбор 200 КБ текста подвешивает
+// планшет, поэтому показываем начало (текст и сохранение — целиком)
+const PREVIEW_LIMIT = 40000
 
 const dayKey = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
@@ -164,6 +171,14 @@ export default function App() {
   const [editingDimId, setEditingDimId] = useState(null)
 
   const notesRef = useRef([])
+  // производные данные (поисковый текст, дедлайны) считаются один раз
+  // на версию заметки, а не заново по всему списку на каждый рендер
+  const noteCacheRef = useRef(null)
+  if (!noteCacheRef.current) noteCacheRef.current = makeNoteCache()
+  const searchOf = (n) =>
+    noteCacheRef.current(n, 'search', (x) => `${x.title || ''}\n${x.body || ''}`.toLowerCase())
+  const deadlinesOf = (n) =>
+    noteCacheRef.current(n, 'deadlines', (x) => parseDeadlines(`${x.title || ''}\n${x.body || ''}`))
   notesRef.current = notes
   const eventsRef = useRef([])
   eventsRef.current = events
@@ -182,6 +197,21 @@ export default function App() {
     if (s === notesSigRef.current) return
     notesSigRef.current = s
     setNotes(arr)
+  }
+
+  // Точечное обновление одной заметки. После каждой правки refresh() читал
+  // из IndexedDB ВСЕ заметки с полными текстами — на 300 заметках по 50 КБ
+  // это десятки мегабайт на одно нажатие. Теперь обновляем только изменённую.
+  const patchNote = (row) => {
+    if (!row) return
+    const next = normalizeNote(row)
+    const arr = notesRef.current.slice()
+    const i = arr.findIndex((n) => n.id === next.id)
+    if (i < 0) arr.push(next)
+    else arr[i] = next
+    const sorted = sortNotes(arr)
+    notesSigRef.current = notesSig(sorted)
+    setNotes(sorted)
   }
 
   const setIfChanged = (setter) => (next) => {
@@ -443,6 +473,14 @@ export default function App() {
 
   const active = useMemo(() => notes.find((n) => n.id === activeId) || null, [notes, activeId])
 
+  // задачи и даты открытой заметки: считаем при изменении текста, а не на
+  // каждый рендер (иначе большая заметка пересканируется на каждое движение)
+  const draftTasks = useMemo(() => (draft ? getTasks(draft.body) : []), [draft?.body])
+  const draftDates = useMemo(
+    () => (draft ? parseDeadlines(`${draft.title || ''}\n${draft.body || ''}`) : []),
+    [draft?.title, draft?.body]
+  )
+
   useEffect(() => {
     setDraft(active ? { ...active } : null)
     setPreview(false)
@@ -455,8 +493,18 @@ export default function App() {
   useEffect(() => {
     const el = bodyRef.current
     if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${Math.max(240, el.scrollHeight)}px`
+    const apply = () => {
+      el.style.height = 'auto'
+      el.style.height = `${Math.max(240, el.scrollHeight)}px`
+    }
+    // на большой заметке пересчёт высоты — это полный reflow поля, поэтому
+    // делаем его не чаще одного раза за кадр
+    if (typeof requestAnimationFrame !== 'function') {
+      apply()
+      return
+    }
+    const raf = requestAnimationFrame(apply)
+    return () => cancelAnimationFrame(raf)
   }, [draft?.body, draft?.id, hwMode, preview, drawMode])
 
   // сколько пикселей занимает текст до позиции idx (с учётом переносов строк):
@@ -494,8 +542,13 @@ export default function App() {
   // чтобы они остались привязанными к своим строкам
   const handleBodyChange = (next) => {
     if (!draft) return
-    const shift = computeShift(draft.body, next, measureY)
-    if (shift) drawRef.current?.shift(shift.fromY, shift.deltaY)
+    // замеры раскладки (три полных прохода по тексту) нужны только когда
+    // на заметке реально что-то нарисовано — в обычной заметке их пропускаем
+    const hasStrokes = (draft.draw_data?.elements?.length || 0) > 0
+    if (hasStrokes) {
+      const shift = computeShift(draft.body, next, measureY)
+      if (shift) drawRef.current?.shift(shift.fromY, shift.deltaY)
+    }
     setDraft({ ...draft, body: next })
   }
 
@@ -507,7 +560,7 @@ export default function App() {
     const cur = notesRef.current.find((n) => n.id === draft.id)
     if (cur && sameContent(cur, draft)) return
     const t = setTimeout(async () => {
-      await updateNote(draft.id, {
+      const saved = await updateNote(draft.id, {
         title: draft.title,
         body: draft.body,
         dimension: draft.dimension,
@@ -516,7 +569,9 @@ export default function App() {
         canvas_data: draft.canvas_data || null,
         draw_data: draft.draw_data || null,
       })
-      await refresh()
+      // список, календарь и граф берут данные из состояния: полный refresh
+      // здесь не нужен, достаточно заменить одну строку
+      patchNote(saved)
       scheduleAutoPush()
     }, 500)
     return () => clearTimeout(t)
@@ -556,7 +611,7 @@ export default function App() {
     const base = notes.filter((n) => enabledDims.has(n.dimension))
     const q = query.trim().toLowerCase()
     if (!q) return base
-    return base.filter((n) => `${n.title || ''}\n${n.body || ''}`.toLowerCase().includes(q))
+    return base.filter((n) => searchOf(n).includes(q))
   }, [notes, enabledDims, query])
   const pinnedList = useMemo(() => visible.filter((n) => n.is_pinned), [visible])
   const otherList = useMemo(() => visible.filter((n) => !n.is_pinned), [visible])
@@ -762,7 +817,7 @@ export default function App() {
   const notesWithDates = useMemo(
     () =>
       visible
-        .flatMap((n) => parseDeadlines(`${n.title}\n${n.body}`).map((dl) => ({ note: n, dl })))
+        .flatMap((n) => deadlinesOf(n).map((dl) => ({ note: n, dl })))
         .sort((a, b) => a.dl.date - b.dl.date),
     [visible]
   )
@@ -1386,7 +1441,14 @@ export default function App() {
 
                     {preview ? (
                       <div className="panel rounded p-4 md">
-                        <ReactMarkdown>{draft.body}</ReactMarkdown>
+                        <ReactMarkdown>{draft.body.slice(0, PREVIEW_LIMIT)}</ReactMarkdown>
+                        {draft.body.length > PREVIEW_LIMIT && (
+                          <div className="text-xs opacity-60 mt-3">
+                            Превью показано для первых {PREVIEW_LIMIT.toLocaleString('ru-RU')} символов из{' '}
+                            {draft.body.length.toLocaleString('ru-RU')}: разбор markdown на очень длинном
+                            тексте подвешивает планшет. Сам текст и сохранение работают целиком.
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="draw-page">
@@ -1414,7 +1476,7 @@ export default function App() {
                     )}
 
                     {(() => {
-                      const tasks = getTasks(draft.body)
+                      const tasks = draftTasks
                       if (!tasks.length) return null
                       return (
                         <div className="panel rounded p-3 mt-3">
@@ -1534,7 +1596,7 @@ export default function App() {
                     </div>
 
                     {(() => {
-                      const dls = parseDeadlines(`${draft.title}\n${draft.body}`)
+                      const dls = draftDates
                       if (!dls.length)
                         return (
                           <div className="text-xs opacity-40 mt-2">
