@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import {
   db,
   DIMENSIONS as DEFAULT_DIMS,
-  seedIfEmpty,
+  openProfileDb,
   seedDimensions,
   normalizeDimensions,
   getSetting,
@@ -22,16 +22,8 @@ import { parseDeadlines, firstDeadline, fmtDate } from './lib/dates.js'
 import { parseWikiLinks } from './lib/links.js'
 import { buildPlan, recalcMissed, toggleChunk, toggleHabit, todayISO, isHabit, parseEffort } from './lib/chunks.js'
 import * as pixelsLib from './lib/pixels.js'
-import {
-  cloudEnabled,
-  syncNow,
-  cleanupDuplicates,
-  authSession,
-  authSignIn,
-  authSignUp,
-  authSignOut,
-  subscribeAuth,
-} from './lib/cloud.js'
+import { cloudEnabled, syncNow, cleanupDuplicates, authSession } from './lib/cloud.js'
+import { currentAccount, createAccount, loginAccount, logoutAccount, hasAccounts } from './lib/auth.js'
 import MapView from './components/MapView.jsx'
 import DrawLayer from './components/DrawLayer.jsx'
 import EventModal from './components/EventModal.jsx'
@@ -139,16 +131,16 @@ export default function App() {
   const [calView, setCalView] = useState('month')
   const [weekAnchor, setWeekAnchor] = useState(() => new Date())
   const [syncMsg, setSyncMsg] = useState('')
-  // аккаунт: облако работает только под своим пользователем
-  const [session, setSession] = useState(null)
+  // Аккаунт обязателен: у каждого своя база, поэтому без входа не видно ничего.
+  const [account, setAccount] = useState(null)
+  const [authChecked, setAuthChecked] = useState(false)
   const [authBusy, setAuthBusy] = useState(false)
   const [authError, setAuthError] = useState('')
   const [authNotice, setAuthNotice] = useState('')
   const [authMode, setAuthMode] = useState('in') // 'in' | 'up'
   const [authEmail, setAuthEmail] = useState('')
   const [authPass, setAuthPass] = useState('')
-  // вход больше не обязателен: он нужен только для синка между устройствами
-  const [authOpen, setAuthOpen] = useState(false)
+  const [anyAccount, setAnyAccount] = useState(true)
   const [lastSyncAt, setLastSyncAt] = useState('')
   const [notifState, setNotifState] = useState(() =>
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
@@ -277,145 +269,123 @@ export default function App() {
     }
   }
 
-  useEffect(() => {
-    if (!cloudEnabled) return
-    let alive = true
-    ;(async () => {
-      const s = await authSession()
-      if (!alive) return
-      setSession(s)
-    })()
-    let off = null
-    subscribeAuth((s) => {
-      setSession(s)
-    }).then((fn) => {
-      if (alive) off = fn
-      else fn?.()
-    })
-    return () => {
-      alive = false
-      off?.()
+  // Загрузка данных текущего аккаунта: вызывается при старте (если сессия есть)
+  // и сразу после входа.
+  const initData = async () => {
+    await seedDimensions()
+    await normalizeDimensions()
+    const ad = sortDims(await db.dimensions.toArray())
+    if (ad.length) {
+      setDims(ad)
+      setEnabledDims(new Set(ad.map((d) => d.id)))
+      ad.forEach((d) => knownDims.current.add(d.id))
     }
-  }, [])
+    // граф: сохранённое измерение, позиции узлов и рисунок
+    const rawPos = await getSetting('graphPos', {})
+    const firstPos = Object.values(rawPos || {})[0]
+    setGraphPos(Array.isArray(firstPos) ? { all: rawPos } : rawPos || {})
+    const rawDraw = await getSetting('graphDraw', {})
+    setGraphDraw(Array.isArray(rawDraw?.elements) ? { all: rawDraw } : rawDraw || {})
+    const savedDim = await getSetting('graphDim', 'all')
+    if (typeof savedDim === 'string' && savedDim) setGraphDim(savedDim)
 
-  // после входа сразу подтягиваем облако: иначе человек вошёл, а синка нет
-  const afterLogin = async () => {
-    setAuthOpen(false)
-    setAuthPass('')
-    setSyncMsg('Вошли — синхронизирую…')
+    const all = (await db.notes.toArray()).filter((n) => !n.deleted)
+    await recalcMissed(all)
+    const freshNotes = await refresh()
+    // браузер не будит закрытое приложение — показываем накопившееся при запуске
     try {
-      const r = await syncNow({ quiet: true })
-      if (r.ok) {
-        await refresh()
-        markSynced()
-        setSyncMsg('Синхронизация включена')
-      } else {
-        setSyncMsg(`Синк: ${r.reason}`)
-      }
-    } catch (e) {
-      setSyncMsg(`Синк: ${e.message}`)
+      const freshEvents = (await db.events.toArray()).filter((e) => !e.deleted)
+      await notifyDigest(freshNotes, freshEvents)
+    } catch {
+      /* уведомления не критичны */
     }
-  }
-
-  const doSignIn = async () => {
-    setAuthBusy(true)
-    setAuthError('')
-    setAuthNotice('')
-    try {
-      const s = await authSignIn(authEmail.trim(), authPass)
-      setSession(s)
-      await afterLogin()
-    } catch (e) {
-      setAuthError(e.message)
-    } finally {
-      setAuthBusy(false)
-    }
-  }
-
-  const doSignUp = async () => {
-    setAuthBusy(true)
-    setAuthError('')
-    setAuthNotice('')
-    try {
-      const r = await authSignUp(authEmail.trim(), authPass)
-      if (r.needsConfirm) {
-        setAuthNotice('Аккаунт создан. Подтверди почту по ссылке из письма и войди.')
-      } else {
-        setSession(r.session)
-        await afterLogin()
-      }
-    } catch (e) {
-      setAuthError(e.message)
-    } finally {
-      setAuthBusy(false)
-    }
-  }
-
-  const doSignOut = async () => {
-    await authSignOut()
-    setSession(null)
-    setSyncMsg('Вышли из аккаунта — данные остались на устройстве')
-  }
-
-  useEffect(() => {
-    ;(async () => {
-      await seedIfEmpty()
-      await seedDimensions()
-      await normalizeDimensions()
-      const ad = sortDims(await db.dimensions.toArray())
-      if (ad.length) {
-        setDims(ad)
-        setEnabledDims(new Set(ad.map((d) => d.id)))
-        ad.forEach((d) => knownDims.current.add(d.id))
-      }
-      // граф: сохранённое измерение, позиции узлов и рисунок
-      const rawPos = await getSetting('graphPos', {})
-      const firstPos = Object.values(rawPos || {})[0]
-      setGraphPos(Array.isArray(firstPos) ? { all: rawPos } : rawPos || {})
-      const rawDraw = await getSetting('graphDraw', {})
-      setGraphDraw(Array.isArray(rawDraw?.elements) ? { all: rawDraw } : rawDraw || {})
-      const savedDim = await getSetting('graphDim', 'all')
-      if (typeof savedDim === 'string' && savedDim) setGraphDim(savedDim)
-
-      const all = (await db.notes.toArray()).filter((n) => !n.deleted)
-      await recalcMissed(all)
-      const freshNotes = await refresh()
-      // браузер не будит закрытое приложение — показываем накопившееся при запуске
-      try {
-        const freshEvents = (await db.events.toArray()).filter((e) => !e.deleted)
-        await notifyDigest(freshNotes, freshEvents)
-      } catch {
-        /* уведомления не критичны */
-      }
-      // тихий автосинк при старте, чтобы с другого устройства всё подтянулось само.
-      // Без входа синка нет — это нормальный режим, а не ошибка.
-      if (cloudEnabled) {
-        const started = await authSession()
-        if (!started) {
-          setSyncMsg('Локальный режим: вход не выполнен, облако выключено')
-        } else {
-          const r = await syncNow({ quiet: true })
-          if (r.ok) {
-            await normalizeDimensions()
-            await refresh()
-            markSynced()
-          } else setSyncMsg(`Автосинк: ${r.reason}`)
-        }
-      }
-      // ярлык «Новая заметка» с иконки приложения (manifest shortcut → ?new=1)
-      try {
-        const q = new URLSearchParams(window.location.search)
-        if (q.get('new') === '1') {
-          window.history.replaceState({}, '', window.location.pathname)
-          const id = await createNoteRow({ title: 'Новая заметка', body: 'дедлайн: ' })
+    // облако (если когда-нибудь настроят ключи) требует отдельного входа
+    if (cloudEnabled) {
+      const started = await authSession()
+      if (started) {
+        const r = await syncNow({ quiet: true })
+        if (r.ok) {
+          await normalizeDimensions()
           await refresh()
-          setActiveId(id)
+          markSynced()
         }
-      } catch {
-        /* не критично */
       }
+    }
+    // ярлык «Новая заметка» с иконки приложения (manifest shortcut → ?new=1)
+    try {
+      const q = new URLSearchParams(window.location.search)
+      if (q.get('new') === '1') {
+        window.history.replaceState({}, '', window.location.pathname)
+        const id = await createNoteRow({ title: 'Новая заметка', body: 'дедлайн: ' })
+        await refresh()
+        setActiveId(id)
+      }
+    } catch {
+      /* не критично */
+    }
+  }
+
+  // Старт: есть ли аккаунт на устройстве и сохранённая сессия
+  useEffect(() => {
+    ;(async () => {
+      const any = await hasAccounts()
+      setAnyAccount(any)
+      const acc = await currentAccount()
+      if (!acc) {
+        setAuthChecked(true)
+        return
+      }
+      await openProfileDb(acc.dbName)
+      setAccount(acc)
+      setAuthChecked(true)
+      await initData()
     })()
   }, [])
+
+  const doAuth = async () => {
+    setAuthBusy(true)
+    setAuthError('')
+    setAuthNotice('')
+    try {
+      // на первом запуске аккаунтов нет — сразу создаём, иначе входим
+      const creating = !anyAccount || authMode === 'up'
+      const acc = creating
+        ? await createAccount(authEmail, authPass)
+        : await loginAccount(authEmail, authPass)
+      await openProfileDb(acc.dbName)
+      setAccount(acc)
+      setAnyAccount(true)
+      setAuthPass('')
+      await initData()
+    } catch (e) {
+      setAuthError(e.message)
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const doSignOut = () => {
+    logoutAccount()
+    setAccount(null)
+    setAuthMode('in')
+    setAuthError('')
+    setAuthNotice('')
+    setAuthEmail('')
+    setAuthPass('')
+    // состояние чистим, чтобы заметки одного аккаунта не мелькали в другом
+    setNotes([])
+    notesSigRef.current = ''
+    setActiveId(null)
+    setDraft(null)
+    setDims([])
+    setEnabledDims(new Set())
+    knownDims.current = new Set()
+    setEvents([])
+    setLinks([])
+    setChunks([])
+    setPixelRows([])
+    setSyncMsg('')
+  }
 
   // напоминания: раз в минуту + через 5 сек после старта
   useEffect(() => {
@@ -1051,6 +1021,93 @@ export default function App() {
     )
   }
 
+  // Без входа показываем только форму: ни заметок, ни измерений не видно.
+  if (!account) {
+    if (!authChecked) {
+      return (
+        <div className="h-full flex items-center justify-center opacity-60" style={{ background: 'var(--bg)' }}>
+          Загрузка…
+        </div>
+      )
+    }
+    const creating = !anyAccount || authMode === 'up'
+    return (
+      <div className="h-full flex items-center justify-center p-4" style={{ background: 'var(--bg)' }}>
+        <div className="panel rounded p-5 w-full" style={{ maxWidth: 420 }}>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-3 h-3 rounded-sm accent-bg" />
+            <b className="text-lg">NotMozgi</b>
+          </div>
+          <div className="text-sm opacity-60 mb-4">
+            {!anyAccount
+              ? 'Первый запуск на этом устройстве. Создай аккаунт — заметки, которые уже есть в браузере, станут твоими.'
+              : creating
+                ? 'Новый аккаунт на этом устройстве. Он будет пустым: свои заметки и свои измерения.'
+                : 'Войди в свой аккаунт. Без входа заметок не видно.'}
+          </div>
+
+          <input
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            placeholder="почта"
+            value={authEmail}
+            onChange={(e) => setAuthEmail(e.target.value)}
+            className="w-full rounded px-3 py-3 text-base mb-2"
+          />
+          <input
+            type="password"
+            autoComplete={creating ? 'new-password' : 'current-password'}
+            placeholder={creating ? 'пароль (минимум 4 символа)' : 'пароль'}
+            value={authPass}
+            onChange={(e) => setAuthPass(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') doAuth()
+            }}
+            className="w-full rounded px-3 py-3 text-base mb-3"
+          />
+
+          {authError && <div className="text-sm danger-text mb-2">{authError}</div>}
+          {authNotice && (
+            <div className="text-sm mb-2" style={{ color: '#86efac' }}>
+              {authNotice}
+            </div>
+          )}
+
+          <button
+            onClick={doAuth}
+            disabled={authBusy || !authEmail.trim() || authPass.length < 4}
+            className="w-full py-3 rounded accent-bg text-black font-bold"
+            style={authBusy || !authEmail.trim() || authPass.length < 4 ? { opacity: 0.5 } : undefined}
+          >
+            {authBusy ? 'Подожди…' : creating ? 'Создать аккаунт' : 'Войти'}
+          </button>
+
+          {anyAccount && (
+            <div className="flex items-center justify-between mt-3 text-sm">
+              <button
+                onClick={() => {
+                  setAuthMode(creating ? 'in' : 'up')
+                  setAuthError('')
+                  setAuthNotice('')
+                }}
+                className="underline opacity-70"
+              >
+                {creating ? 'У меня уже есть аккаунт' : 'Создать ещё аккаунт'}
+              </button>
+            </div>
+          )}
+
+          <div className="text-xs opacity-40 mt-4">
+            Аккаунт и пароль хранятся только на этом устройстве, восстановить пароль
+            нельзя — запиши его. У каждого аккаунта свои заметки: войдя другим, ты
+            увидишь пустое приложение.
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="h-full flex flex-col" style={{ background: 'var(--bg)' }}>
       {/* ---------- верхняя панель ---------- */}
@@ -1083,33 +1140,23 @@ export default function App() {
           </button>
         ))}
 
-        {session ? (
-          <button onClick={doSignOut} className="tab-btn" title={`Выйти (${session.user?.email || ''})`}>
-            ⎋ {session.user?.email?.split('@')[0] || 'выйти'}
-          </button>
-        ) : cloudEnabled ? (
-          <button
-            onClick={() => setAuthOpen(true)}
-            className="tab-btn"
-            title="Вход нужен только для синхронизации между устройствами"
-          >
-            🔑 Войти
-          </button>
-        ) : null}
+        <button
+          onClick={doSignOut}
+          className="tab-btn"
+          title={`Выйти из аккаунта ${account?.email || ''}`}
+        >
+          ⎋ {account?.email?.split('@')[0] || 'выйти'}
+        </button>
         <button
           onClick={() => {
             if (!cloudEnabled) {
               setSyncMsg('Облако не настроено: впиши ключи в public/config.js')
               return
             }
-            if (!session) {
-              setAuthOpen(true)
-              return
-            }
             doSync()
           }}
           className="tab-btn"
-          title="Синхронизация с Supabase"
+          title={cloudEnabled ? 'Синхронизация с Supabase' : 'Данные хранятся на этом устройстве'}
         >
           {cloudEnabled ? 'Синк' : 'Локально'}
         </button>
@@ -1868,86 +1915,6 @@ export default function App() {
           +
         </button>
       </div>
-
-      {authOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: 'rgba(0,0,0,0.55)' }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setAuthOpen(false)
-          }}
-        >
-          <div className="panel rounded p-5 w-full" style={{ maxWidth: 420 }}>
-            <div className="flex items-start justify-between gap-2 mb-1">
-              <b className="text-lg">Вход для синхронизации</b>
-              <button className="icon-btn" onClick={() => setAuthOpen(false)} title="Закрыть">
-                ✕
-              </button>
-            </div>
-            <div className="text-sm opacity-60 mb-4">
-              Необязательно: заметки и так работают на этом устройстве. Вход нужен только
-              чтобы они появились на других устройствах и в облаке.
-            </div>
-
-            <input
-              type="email"
-              inputMode="email"
-              autoComplete="email"
-              placeholder="почта"
-              value={authEmail}
-              onChange={(e) => setAuthEmail(e.target.value)}
-              className="w-full rounded px-3 py-3 text-base mb-2"
-            />
-            <input
-              type="password"
-              autoComplete={authMode === 'in' ? 'current-password' : 'new-password'}
-              placeholder="пароль (минимум 6 символов)"
-              value={authPass}
-              onChange={(e) => setAuthPass(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') (authMode === 'in' ? doSignIn() : doSignUp())
-              }}
-              className="w-full rounded px-3 py-3 text-base mb-3"
-            />
-
-            {authError && <div className="text-sm danger-text mb-2">{authError}</div>}
-            {authNotice && (
-              <div className="text-sm mb-2" style={{ color: '#86efac' }}>
-                {authNotice}
-              </div>
-            )}
-
-            <button
-              onClick={() => (authMode === 'in' ? doSignIn() : doSignUp())}
-              disabled={authBusy || !authEmail.trim() || authPass.length < 6}
-              className="w-full py-3 rounded accent-bg text-black font-bold"
-              style={authBusy || !authEmail.trim() || authPass.length < 6 ? { opacity: 0.5 } : undefined}
-            >
-              {authBusy ? 'Подожди…' : authMode === 'in' ? 'Войти' : 'Создать аккаунт'}
-            </button>
-
-            <div className="flex items-center justify-between mt-3 text-sm">
-              <button
-                onClick={() => {
-                  setAuthMode(authMode === 'in' ? 'up' : 'in')
-                  setAuthError('')
-                  setAuthNotice('')
-                }}
-                className="underline opacity-70"
-              >
-                {authMode === 'in' ? 'Создать аккаунт' : 'У меня уже есть аккаунт'}
-              </button>
-              <button onClick={() => setAuthOpen(false)} className="underline opacity-70">
-                Не сейчас
-              </button>
-            </div>
-
-            <div className="text-xs opacity-40 mt-4">
-              Данные видны только владельцу аккаунта: на сервере включены правила доступа.
-            </div>
-          </div>
-        </div>
-      )}
 
       {evModalDay && (
         <EventModal

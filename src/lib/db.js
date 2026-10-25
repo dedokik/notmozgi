@@ -11,71 +11,101 @@ export const DIMENSIONS = [
 export const MAP_W = 100
 export const MAP_H = 50
 
-export const db = new Dexie('not-dark-os')
+// У каждого аккаунта СВОЯ база, поэтому данные разных людей физически не
+// пересекаются: вошёл другим аккаунтом — приложение пустое, чужих заметок
+// и измерений там нет.
+export const BASE_DB = 'not-dark-os'
 
-// ВАЖНО: is_pinned хранится числом 0/1, а НЕ boolean.
-// IndexedDB не умеет индексировать boolean: запись с true в индексируемом
-// поле отваливается с DataError, и таблица перестаёт открываться.
-// Число 0/1 и индексируется нормально, и работает в проверках `if (note.is_pinned)`.
+export function makeDb(name) {
+  const d = new Dexie(name)
 
-db.version(1).stores({
-  notes: '++id, dimension, updatedAt',
-  settings: 'key',
-})
+  // ВАЖНО: is_pinned хранится числом 0/1, а НЕ boolean.
+  // IndexedDB не умеет индексировать boolean: запись с true в индексируемом
+  // поле отваливается с DataError, и таблица перестаёт открываться.
+  d.version(1).stores({
+    notes: '++id, dimension, updatedAt',
+    settings: 'key',
+  })
 
-db.version(2).stores({
-  notes: '++id, dimension, updatedAt',
-  settings: 'key',
-  links: '++id, fromId, toId',
-  chunks: '++id, noteId, date, done',
-  pixels: '[x+y], noteId, openedAt',
-})
+  d.version(2).stores({
+    notes: '++id, dimension, updatedAt',
+    settings: 'key',
+    links: '++id, fromId, toId',
+    chunks: '++id, noteId, date, done',
+    pixels: '[x+y], noteId, openedAt',
+  })
 
-db.version(3).stores({
-  notes: '++id, dimension, updatedAt',
-  settings: 'key',
-  links: '++id, fromId, toId',
-  chunks: '++id, noteId, date, done',
-  pixels: '[x+y], noteId, openedAt',
-  dimensions: 'id',
-})
-
-db.version(4).stores({
-  notes: '++id, dimension, updatedAt',
-  settings: 'key',
-  links: '++id, fromId, toId',
-  chunks: '++id, noteId, date, done',
-  pixels: '[x+y], noteId, openedAt',
-  dimensions: 'id',
-  events: 'id, date',
-})
-
-// v5: закрепление заметок и событий + два формата заметки (текст / холст).
-// upgrade() доводит старые записи до нового вида, ничего не удаляя.
-db.version(5)
-  .stores({
-    notes: '++id, dimension, updatedAt, is_pinned, note_type',
+  d.version(3).stores({
+    notes: '++id, dimension, updatedAt',
     settings: 'key',
     links: '++id, fromId, toId',
     chunks: '++id, noteId, date, done',
     pixels: '[x+y], noteId, openedAt',
     dimensions: 'id',
-    events: 'id, date, is_pinned',
   })
-  .upgrade(async (tx) => {
-    await tx.table('notes').toCollection().modify((n) => {
-      n.is_pinned = n.is_pinned ? 1 : 0
-      if (n.note_type !== 'canvas') n.note_type = 'text'
-      if (typeof n.updatedAt === 'string') n.updatedAt = Date.parse(n.updatedAt) || Date.now()
-      if (typeof n.updatedAt !== 'number' || !isFinite(n.updatedAt)) n.updatedAt = Date.now()
-      if (typeof n.estimateHours !== 'number') n.estimateHours = Number(n.estimateHours) || 0
-    })
-    await tx.table('events').toCollection().modify((e) => {
-      e.is_pinned = e.is_pinned ? 1 : 0
-      if (typeof e.deleted === 'undefined') e.deleted = 0
-      if (typeof e.updatedAt !== 'number') e.updatedAt = Date.now()
-    })
+
+  d.version(4).stores({
+    notes: '++id, dimension, updatedAt',
+    settings: 'key',
+    links: '++id, fromId, toId',
+    chunks: '++id, noteId, date, done',
+    pixels: '[x+y], noteId, openedAt',
+    dimensions: 'id',
+    events: 'id, date',
   })
+
+  // v5: закрепление заметок и событий + два формата заметки (текст / холст).
+  // upgrade() доводит старые записи до нового вида, ничего не удаляя.
+  d.version(5)
+    .stores({
+      notes: '++id, dimension, updatedAt, is_pinned, note_type',
+      settings: 'key',
+      links: '++id, fromId, toId',
+      chunks: '++id, noteId, date, done',
+      pixels: '[x+y], noteId, openedAt',
+      dimensions: 'id',
+      events: 'id, date, is_pinned',
+    })
+    .upgrade(async (tx) => {
+      await tx.table('notes').toCollection().modify((n) => {
+        n.is_pinned = n.is_pinned ? 1 : 0
+        if (n.note_type !== 'canvas') n.note_type = 'text'
+        if (typeof n.updatedAt === 'string') n.updatedAt = Date.parse(n.updatedAt) || Date.now()
+        if (typeof n.updatedAt !== 'number' || !isFinite(n.updatedAt)) n.updatedAt = Date.now()
+        if (typeof n.estimateHours !== 'number') n.estimateHours = Number(n.estimateHours) || 0
+      })
+      await tx.table('events').toCollection().modify((e) => {
+        e.is_pinned = e.is_pinned ? 1 : 0
+        if (typeof e.deleted === 'undefined') e.deleted = 0
+        if (typeof e.updatedAt !== 'number') e.updatedAt = Date.now()
+      })
+    })
+
+  return d
+}
+
+// Первый аккаунт на устройстве живёт в уже существующей базе — так старые
+// заметки не нужно никуда переносить. Следующие аккаунты получают свою.
+export const dbNameFor = (accountId, isFirst) => (isFirst ? BASE_DB : `${BASE_DB}-${accountId}`)
+
+export let db = makeDb(BASE_DB)
+
+// Переключение на базу аккаунта. `db` — живая привязка модуля: все, кто её
+// импортировал, дальше работают уже с новой базой.
+export async function openProfileDb(name) {
+  if (db && db.name === name) {
+    if (!db.isOpen()) await db.open()
+    return db
+  }
+  try {
+    db.close()
+  } catch {
+    /* уже закрыта */
+  }
+  db = makeDb(name)
+  await db.open()
+  return db
+}
 
 // === НОРМАЛИЗАЦИЯ ===
 
@@ -234,63 +264,6 @@ export async function normalizeDimensions() {
     if (!ex) await db.dimensions.add({ ...d })
   }
   return extra.length
-}
-
-export async function seedIfEmpty() {
-  const count = await db.notes.count()
-  if (count > 0) return
-  const now = nowTs()
-  await db.notes.bulkAdd([
-    {
-      title: 'Добро пожаловать',
-      body: '# Привет\n\nЭто Not: заметки + холст + календарь + граф + карта.\n\n- [ ] Создать заметку в измерении Учёба\n- [ ] Написать `дедлайн: 30.09` и `оценка: 6ч` в тексте\n- [x] Открыть календарь\n\nСвязь с релизом: [[MVP релиз]]\n\nдедлайн: 30.09',
-      dimension: 'ya',
-      estimateHours: 6,
-      is_pinned: 1,
-      note_type: 'text',
-      canvas_data: null,
-      updatedAt: now,
-    },
-    {
-      title: 'Купить продукты',
-      body: '## Список\n\n- [ ] Молоко\n- [ ] Хлеб\n\nдедлайн: 26.09',
-      dimension: 'study',
-      estimateHours: 1,
-      is_pinned: 0,
-      note_type: 'text',
-      canvas_data: null,
-      updatedAt: now,
-    },
-    {
-      title: 'MVP релиз',
-      body: '# Проекты\n\nДоделать каркас и показать на планшете по Wi-Fi.\n\n**дедлайн: 28.09**',
-      dimension: 'work',
-      estimateHours: 4,
-      is_pinned: 0,
-      note_type: 'text',
-      canvas_data: null,
-      updatedAt: now,
-    },
-    {
-      title: 'Схема: как всё устроено',
-      body: 'Холст: рисуй стилусом схемы, стрелки и обводки.',
-      dimension: 'study',
-      estimateHours: 0,
-      is_pinned: 0,
-      note_type: 'canvas',
-      canvas_data: {
-        version: 1,
-        elements: [
-          { id: 's1', type: 'rect', x: 60, y: 60, w: 170, h: 80, color: '#3b82f6', width: 3 },
-          { id: 't1', type: 'text', x: 82, y: 108, text: 'Идея', color: '#e8e8ea', size: 22 },
-          { id: 'a1', type: 'arrow', x1: 230, y1: 100, x2: 330, y2: 100, color: '#22c55e', width: 3 },
-          { id: 's2', type: 'rect', x: 330, y: 60, w: 190, h: 80, color: '#8b5cf6', width: 3 },
-          { id: 't2', type: 'text', x: 352, y: 108, text: 'Заметка', color: '#e8e8ea', size: 22 },
-        ],
-      },
-      updatedAt: now,
-    },
-  ])
 }
 
 // === НАСТРОЙКИ ===
