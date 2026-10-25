@@ -23,7 +23,7 @@ import { parseWikiLinks } from './lib/links.js'
 import { buildPlan, recalcMissed, toggleChunk, toggleHabit, todayISO, isHabit, parseEffort } from './lib/chunks.js'
 import * as pixelsLib from './lib/pixels.js'
 import { cloudEnabled, syncNow, cleanupDuplicates, authSession } from './lib/cloud.js'
-import { currentAccount, createAccount, loginAccount, logoutAccount, hasAccounts } from './lib/auth.js'
+import { CLOUD, currentAccount, createAccount, loginAccount, logoutAccount, hasAccounts } from './lib/auth.js'
 import MapView from './components/MapView.jsx'
 import DrawLayer from './components/DrawLayer.jsx'
 import EventModal from './components/EventModal.jsx'
@@ -349,9 +349,14 @@ export default function App() {
     try {
       // на первом запуске аккаунтов нет — сразу создаём, иначе входим
       const creating = !anyAccount || authMode === 'up'
-      const acc = creating
+      const res = creating
         ? await createAccount(authEmail, authPass)
         : await loginAccount(authEmail, authPass)
+      if (res && res.needsConfirm) {
+        setAuthNotice('Аккаунт создан. Подтверди почту по ссылке из письма и войди.')
+        return
+      }
+      const acc = res
       await openProfileDb(acc.dbName)
       setAccount(acc)
       setAnyAccount(true)
@@ -364,8 +369,8 @@ export default function App() {
     }
   }
 
-  const doSignOut = () => {
-    logoutAccount()
+  const doSignOut = async () => {
+    await logoutAccount()
     setAccount(null)
     setAuthMode('in')
     setAuthError('')
@@ -1039,11 +1044,15 @@ export default function App() {
             <b className="text-lg">NotMozgi</b>
           </div>
           <div className="text-sm opacity-60 mb-4">
-            {!anyAccount
-              ? 'Первый запуск на этом устройстве. Создай аккаунт — заметки, которые уже есть в браузере, станут твоими.'
-              : creating
-                ? 'Новый аккаунт на этом устройстве. Он будет пустым: свои заметки и свои измерения.'
-                : 'Войди в свой аккаунт. Без входа заметок не видно.'}
+            {CLOUD
+              ? creating
+                ? 'Аккаунт в облаке: он же открывается на других устройствах, заметки синхронизируются.'
+                : 'Войди в аккаунт — заметки подтянутся из облака на это устройство.'
+              : !anyAccount
+                ? 'Первый запуск на этом устройстве. Создай аккаунт — заметки, которые уже есть в браузере, станут твоими.'
+                : creating
+                  ? 'Новый аккаунт на этом устройстве. Он будет пустым: свои заметки и свои измерения.'
+                  : 'Войди в свой аккаунт. Без входа заметок не видно.'}
           </div>
 
           <input
@@ -1099,9 +1108,9 @@ export default function App() {
           )}
 
           <div className="text-xs opacity-40 mt-4">
-            Аккаунт и пароль хранятся только на этом устройстве, восстановить пароль
-            нельзя — запиши его. У каждого аккаунта свои заметки: войдя другим, ты
-            увидишь пустое приложение.
+            {CLOUD
+              ? 'Заметки хранятся в облаке (Supabase), доступ есть только у владельца аккаунта. У каждого аккаунта свои записи.'
+              : 'Синхронизация между устройствами выключена: не вписаны ключи Supabase. Аккаунт и пароль хранятся только здесь, восстановить пароль нельзя — запиши его. У каждого аккаунта свои заметки.'}
           </div>
         </div>
       </div>
