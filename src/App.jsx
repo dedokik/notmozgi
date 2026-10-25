@@ -141,14 +141,14 @@ export default function App() {
   const [syncMsg, setSyncMsg] = useState('')
   // аккаунт: облако работает только под своим пользователем
   const [session, setSession] = useState(null)
-  const [authReady, setAuthReady] = useState(!cloudEnabled)
   const [authBusy, setAuthBusy] = useState(false)
   const [authError, setAuthError] = useState('')
   const [authNotice, setAuthNotice] = useState('')
   const [authMode, setAuthMode] = useState('in') // 'in' | 'up'
   const [authEmail, setAuthEmail] = useState('')
   const [authPass, setAuthPass] = useState('')
-  const [localOnly, setLocalOnly] = useState(false)
+  // вход больше не обязателен: он нужен только для синка между устройствами
+  const [authOpen, setAuthOpen] = useState(false)
   const [lastSyncAt, setLastSyncAt] = useState('')
   const [notifState, setNotifState] = useState(() =>
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
@@ -284,12 +284,10 @@ export default function App() {
       const s = await authSession()
       if (!alive) return
       setSession(s)
-      setAuthReady(true)
     })()
     let off = null
     subscribeAuth((s) => {
       setSession(s)
-      setAuthReady(true)
     }).then((fn) => {
       if (alive) off = fn
       else fn?.()
@@ -300,6 +298,25 @@ export default function App() {
     }
   }, [])
 
+  // после входа сразу подтягиваем облако: иначе человек вошёл, а синка нет
+  const afterLogin = async () => {
+    setAuthOpen(false)
+    setAuthPass('')
+    setSyncMsg('Вошли — синхронизирую…')
+    try {
+      const r = await syncNow({ quiet: true })
+      if (r.ok) {
+        await refresh()
+        markSynced()
+        setSyncMsg('Синхронизация включена')
+      } else {
+        setSyncMsg(`Синк: ${r.reason}`)
+      }
+    } catch (e) {
+      setSyncMsg(`Синк: ${e.message}`)
+    }
+  }
+
   const doSignIn = async () => {
     setAuthBusy(true)
     setAuthError('')
@@ -307,7 +324,7 @@ export default function App() {
     try {
       const s = await authSignIn(authEmail.trim(), authPass)
       setSession(s)
-      setAuthPass('')
+      await afterLogin()
     } catch (e) {
       setAuthError(e.message)
     } finally {
@@ -325,7 +342,7 @@ export default function App() {
         setAuthNotice('Аккаунт создан. Подтверди почту по ссылке из письма и войди.')
       } else {
         setSession(r.session)
-        setAuthPass('')
+        await afterLogin()
       }
     } catch (e) {
       setAuthError(e.message)
@@ -370,14 +387,20 @@ export default function App() {
       } catch {
         /* уведомления не критичны */
       }
-      // тихий автосинк при старте, чтобы с другого устройства всё подтянулось само
+      // тихий автосинк при старте, чтобы с другого устройства всё подтянулось само.
+      // Без входа синка нет — это нормальный режим, а не ошибка.
       if (cloudEnabled) {
-        const r = await syncNow({ quiet: true })
-        if (r.ok) {
-          await normalizeDimensions()
-          await refresh()
-          markSynced()
-        } else setSyncMsg(`Автосинк: ${r.reason}`)
+        const started = await authSession()
+        if (!started) {
+          setSyncMsg('Локальный режим: вход не выполнен, облако выключено')
+        } else {
+          const r = await syncNow({ quiet: true })
+          if (r.ok) {
+            await normalizeDimensions()
+            await refresh()
+            markSynced()
+          } else setSyncMsg(`Автосинк: ${r.reason}`)
+        }
       }
       // ярлык «Новая заметка» с иконки приложения (manifest shortcut → ?new=1)
       try {
@@ -1028,88 +1051,6 @@ export default function App() {
     )
   }
 
-  // облако настроено, но вход не выполнен — показываем экран входа.
-  // Пока сессия проверяется, приложение не показываем: иначе на секунду
-  // мелькают заметки, а потом появляется логин.
-  if (cloudEnabled && !localOnly && !session && !authReady) {
-    return (
-      <div className="h-full flex items-center justify-center opacity-60" style={{ background: 'var(--bg)' }}>
-        Проверяю вход…
-      </div>
-    )
-  }
-
-  if (cloudEnabled && !localOnly && !session) {
-    const submit = () => (authMode === 'in' ? doSignIn() : doSignUp())
-    return (
-      <div className="h-full flex items-center justify-center p-4" style={{ background: 'var(--bg)' }}>
-        <div className="panel rounded p-5 w-full" style={{ maxWidth: 420 }}>
-          <div className="flex items-center gap-2 mb-1">
-            <div className="w-3 h-3 rounded-sm accent-bg" />
-            <b className="text-lg">NotMozgi</b>
-          </div>
-          <div className="text-sm opacity-60 mb-4">
-            Войди, чтобы синхронизировать заметки. Без входа приложение работает только
-            на этом устройстве.
-          </div>
-
-          <input
-            type="email"
-            inputMode="email"
-            autoComplete="email"
-            placeholder="почта"
-            value={authEmail}
-            onChange={(e) => setAuthEmail(e.target.value)}
-            className="w-full rounded px-3 py-3 text-base mb-2"
-          />
-          <input
-            type="password"
-            autoComplete={authMode === 'in' ? 'current-password' : 'new-password'}
-            placeholder="пароль (минимум 6 символов)"
-            value={authPass}
-            onChange={(e) => setAuthPass(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') submit()
-            }}
-            className="w-full rounded px-3 py-3 text-base mb-3"
-          />
-
-          {authError && <div className="text-sm danger-text mb-2">{authError}</div>}
-          {authNotice && <div className="text-sm mb-2" style={{ color: '#86efac' }}>{authNotice}</div>}
-
-          <button
-            onClick={submit}
-            disabled={authBusy || !authEmail.trim() || authPass.length < 6}
-            className="w-full py-3 rounded accent-bg text-black font-bold"
-            style={authBusy || !authEmail.trim() || authPass.length < 6 ? { opacity: 0.5 } : undefined}
-          >
-            {authBusy ? 'Подожди…' : authMode === 'in' ? 'Войти' : 'Создать аккаунт'}
-          </button>
-
-          <div className="flex items-center justify-between mt-3 text-sm">
-            <button
-              onClick={() => {
-                setAuthMode(authMode === 'in' ? 'up' : 'in')
-                setAuthError('')
-                setAuthNotice('')
-              }}
-              className="underline opacity-70"
-            >
-              {authMode === 'in' ? 'Создать аккаунт' : 'У меня уже есть аккаунт'}
-            </button>
-            <button onClick={() => setLocalOnly(true)} className="underline opacity-70">
-              Без облака
-            </button>
-          </div>
-
-          <div className="text-xs opacity-40 mt-4">
-            Данные видны только владельцу аккаунта — на сервере включены правила доступа.
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <div className="h-full flex flex-col" style={{ background: 'var(--bg)' }}>
       {/* ---------- верхняя панель ---------- */}
@@ -1142,12 +1083,34 @@ export default function App() {
           </button>
         ))}
 
-        {session && (
+        {session ? (
           <button onClick={doSignOut} className="tab-btn" title={`Выйти (${session.user?.email || ''})`}>
             ⎋ {session.user?.email?.split('@')[0] || 'выйти'}
           </button>
-        )}
-        <button onClick={doSync} className="tab-btn" title="Синхронизация с Supabase">
+        ) : cloudEnabled ? (
+          <button
+            onClick={() => setAuthOpen(true)}
+            className="tab-btn"
+            title="Вход нужен только для синхронизации между устройствами"
+          >
+            🔑 Войти
+          </button>
+        ) : null}
+        <button
+          onClick={() => {
+            if (!cloudEnabled) {
+              setSyncMsg('Облако не настроено: впиши ключи в public/config.js')
+              return
+            }
+            if (!session) {
+              setAuthOpen(true)
+              return
+            }
+            doSync()
+          }}
+          className="tab-btn"
+          title="Синхронизация с Supabase"
+        >
           {cloudEnabled ? 'Синк' : 'Локально'}
         </button>
         {cloudEnabled && lastSyncAt && (
@@ -1905,6 +1868,86 @@ export default function App() {
           +
         </button>
       </div>
+
+      {authOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.55)' }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setAuthOpen(false)
+          }}
+        >
+          <div className="panel rounded p-5 w-full" style={{ maxWidth: 420 }}>
+            <div className="flex items-start justify-between gap-2 mb-1">
+              <b className="text-lg">Вход для синхронизации</b>
+              <button className="icon-btn" onClick={() => setAuthOpen(false)} title="Закрыть">
+                ✕
+              </button>
+            </div>
+            <div className="text-sm opacity-60 mb-4">
+              Необязательно: заметки и так работают на этом устройстве. Вход нужен только
+              чтобы они появились на других устройствах и в облаке.
+            </div>
+
+            <input
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              placeholder="почта"
+              value={authEmail}
+              onChange={(e) => setAuthEmail(e.target.value)}
+              className="w-full rounded px-3 py-3 text-base mb-2"
+            />
+            <input
+              type="password"
+              autoComplete={authMode === 'in' ? 'current-password' : 'new-password'}
+              placeholder="пароль (минимум 6 символов)"
+              value={authPass}
+              onChange={(e) => setAuthPass(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (authMode === 'in' ? doSignIn() : doSignUp())
+              }}
+              className="w-full rounded px-3 py-3 text-base mb-3"
+            />
+
+            {authError && <div className="text-sm danger-text mb-2">{authError}</div>}
+            {authNotice && (
+              <div className="text-sm mb-2" style={{ color: '#86efac' }}>
+                {authNotice}
+              </div>
+            )}
+
+            <button
+              onClick={() => (authMode === 'in' ? doSignIn() : doSignUp())}
+              disabled={authBusy || !authEmail.trim() || authPass.length < 6}
+              className="w-full py-3 rounded accent-bg text-black font-bold"
+              style={authBusy || !authEmail.trim() || authPass.length < 6 ? { opacity: 0.5 } : undefined}
+            >
+              {authBusy ? 'Подожди…' : authMode === 'in' ? 'Войти' : 'Создать аккаунт'}
+            </button>
+
+            <div className="flex items-center justify-between mt-3 text-sm">
+              <button
+                onClick={() => {
+                  setAuthMode(authMode === 'in' ? 'up' : 'in')
+                  setAuthError('')
+                  setAuthNotice('')
+                }}
+                className="underline opacity-70"
+              >
+                {authMode === 'in' ? 'Создать аккаунт' : 'У меня уже есть аккаунт'}
+              </button>
+              <button onClick={() => setAuthOpen(false)} className="underline opacity-70">
+                Не сейчас
+              </button>
+            </div>
+
+            <div className="text-xs opacity-40 mt-4">
+              Данные видны только владельцу аккаунта: на сервере включены правила доступа.
+            </div>
+          </div>
+        </div>
+      )}
 
       {evModalDay && (
         <EventModal
