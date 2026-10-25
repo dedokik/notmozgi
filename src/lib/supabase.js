@@ -6,6 +6,7 @@
 // продолжает работать с базовыми полями. Полная схема — supabase/schema.sql.
 import { createClient } from '@supabase/supabase-js'
 import { db, getSetting, setSetting, DIMENSIONS as BASE_DIMS } from './db.js'
+import { normalizeSupabaseUrl } from './supabase-url.js'
 
 // id базовых измерений — только они допустимы к синку
 const BASE_DIM_IDS = BASE_DIMS.map((d) => d.id)
@@ -15,7 +16,7 @@ const BASE_DIM_IDS = BASE_DIMS.map((d) => d.id)
 //  2) public/config.js — чтобы вписать ключи руками и запушить,
 //     без пересборки (файл попадает в dist как /config.js).
 const runtimeCfg = (typeof window !== 'undefined' && window.__NOT_CONFIG__) || {}
-const URL = import.meta.env.VITE_SUPABASE_URL || runtimeCfg.supabaseUrl || ''
+const URL = normalizeSupabaseUrl(import.meta.env.VITE_SUPABASE_URL || runtimeCfg.supabaseUrl || '')
 const KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || runtimeCfg.supabaseAnonKey || ''
 
 export const cloudEnabled = Boolean(URL && KEY)

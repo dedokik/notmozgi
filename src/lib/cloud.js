@@ -4,9 +4,11 @@
 // Здесь мы считаем флаг «облако настроено» без тяжёлого импорта, а сам
 // модуль подгружаем лениво — при первом реальном обращении.
 
+import { normalizeSupabaseUrl } from './supabase-url.js'
+
 const cfg = (typeof window !== 'undefined' && window.__NOT_CONFIG__) || {}
 
-const URL = import.meta.env.VITE_SUPABASE_URL || cfg.supabaseUrl || ''
+const URL = normalizeSupabaseUrl(import.meta.env.VITE_SUPABASE_URL || cfg.supabaseUrl || '')
 const KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || cfg.supabaseAnonKey || ''
 
 export const cloudEnabled = Boolean(URL && KEY)
