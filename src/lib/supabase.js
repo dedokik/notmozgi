@@ -278,7 +278,12 @@ async function pushNotes(sb) {
 // Конфликт (поменяли оба) — оставляем локальное, оно уедет следующим push.
 async function pullNotes(sb) {
   const { data, error } = await sb.from('notes').select('*').order('updated_at', { ascending: true })
-  if (error || !data) return 0
+  if (error || !data) {
+    // Раньше ошибка чтения молча превращалась в «приехало 0»: на новом
+    // устройстве это выглядело как «заметок нет», хотя виноват был запрос.
+    if (error) await logSync(`pull notes FAIL: ${String(error.message || error).slice(0, 140)}`)
+    return 0
+  }
 
   const map = await getSetting('cloudIds', {})
   const seen = await getSetting('seenHash', {})
@@ -600,21 +605,59 @@ async function pullEvents(sb) {
 }
 
 async function runSync(sb, opts) {
-  await pushDimensions(sb)
-  await pushNotes(sb)
-  await pushEvents(sb)
+  // каждый шаг отдельно: сбой одного не должен оставлять синк «наполовину
+  // сделанным» и молчать об этом — всё пишем в журнал диагностики
+  const step = async (name, fn, fallback) => {
+    try {
+      return await fn()
+    } catch (e) {
+      await logSync(`${name} FAIL: ${String(e.message || e).slice(0, 140)}`)
+      return fallback
+    }
+  }
+
+  await step('push dimensions', () => pushDimensions(sb))
+  await step('push notes', () => pushNotes(sb))
+  await step('push events', () => pushEvents(sb))
   // подчистка лишних измерений в облаке — после пуша заметок (иначе FK)
-  await pruneCloudDimensions(sb)
-  const pulled = await pullNotes(sb)
-  const rest = await pullRest(sb)
-  const pulledEvents = await pullEvents(sb)
-  await pushRest(sb)
+  await step('prune dimensions', () => pruneCloudDimensions(sb))
+  const pulled = (await step('pull notes', () => pullNotes(sb), 0)) || 0
+  const rest = (await step('pull links/chunks', () => pullRest(sb), { links: 0, chunks: 0 })) || { links: 0, chunks: 0 }
+  const pulledEvents = (await step('pull events', () => pullEvents(sb), 0)) || 0
+  await step('push links/chunks', () => pushRest(sb))
   await setSetting('lastSync', new Date().toISOString())
   // тихие фоновые синки пишут итог только если что-то реально приехало/уехало
   if (!opts.quiet || pulled || rest.links || rest.chunks || pulledEvents) {
     await logSync(`ok pulled=${pulled} links=${rest.links} chunks=${rest.chunks} events=${pulledEvents}`)
   }
   return { ok: true, pulled, pulledLinks: rest.links, pulledChunks: rest.chunks, pulledEvents }
+}
+
+// Сколько заметок реально лежит в облаке у текущего пользователя.
+// null — не удалось узнать (нет сети / нет входа).
+export async function cloudNoteCount() {
+  const sb = cloud()
+  if (!sb) return null
+  try {
+    const { count, error } = await sb.from('notes').select('id', { count: 'exact', head: true })
+    if (error) return null
+    return count ?? null
+  } catch {
+    return null
+  }
+}
+
+// «Отправить всё в облако»: сбрасываем отметки «уже отправлено» и прогоняем
+// синк заново. Нужно, когда на этом устройстве заметки есть, а в облаке пусто
+// (например, аккаунт вошли, но ни разу не синкнули).
+export async function pushEverything() {
+  const sb = cloud()
+  if (!sb) return { ok: false, reason: 'Облако не настроено' }
+  const session = await authSession()
+  if (!session) return { ok: false, needLogin: true, reason: 'Нужен вход в аккаунт' }
+  await setSetting('pushedHash', {})
+  await logSync('push everything: отметки сброшены')
+  return syncNow()
 }
 
 const EXPIRED_AUTH =

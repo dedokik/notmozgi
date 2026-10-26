@@ -21,6 +21,8 @@ function load() {
 
 export const syncNow = async (opts) => (await load()).syncNow(opts)
 export const cleanupDuplicates = async () => (await load()).cleanupDuplicates()
+export const cloudNoteCount = async () => (await load()).cloudNoteCount()
+export const pushEverything = async () => (await load()).pushEverything()
 export const authSession = async () => (await load()).authSession()
 export const authSignIn = async (email, password) => (await load()).authSignIn(email, password)
 export const authSignUp = async (email, password) => (await load()).authSignUp(email, password)

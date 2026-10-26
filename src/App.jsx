@@ -22,7 +22,7 @@ import { parseDeadlines, firstDeadline, fmtDate } from './lib/dates.js'
 import { parseWikiLinks } from './lib/links.js'
 import { buildPlan, recalcMissed, toggleChunk, toggleHabit, todayISO, isHabit, parseEffort } from './lib/chunks.js'
 import * as pixelsLib from './lib/pixels.js'
-import { cloudEnabled, syncNow, cleanupDuplicates, authSession } from './lib/cloud.js'
+import { cloudEnabled, syncNow, cleanupDuplicates, authSession, cloudNoteCount, pushEverything } from './lib/cloud.js'
 import { CLOUD, currentAccount, createAccount, loginAccount, logoutAccount, hasAccounts } from './lib/auth.js'
 import MapView from './components/MapView.jsx'
 import DrawLayer from './components/DrawLayer.jsx'
@@ -142,6 +142,9 @@ export default function App() {
   const [authPass, setAuthPass] = useState('')
   const [anyAccount, setAnyAccount] = useState(true)
   const [lastSyncAt, setLastSyncAt] = useState('')
+  // сколько заметок реально лежит в облаке (null — ещё не спросили)
+  const [cloudNotes, setCloudNotes] = useState(null)
+  const [pushingAll, setPushingAll] = useState(false)
   const [notifState, setNotifState] = useState(() =>
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   )
@@ -369,6 +372,7 @@ export default function App() {
       setAnyAccount(true)
       setAuthPass('')
       await initData()
+      await refreshCloudCount()
     } catch (e) {
       setAuthError(e.message)
     } finally {
@@ -477,6 +481,12 @@ export default function App() {
     }, 200)
     return () => clearTimeout(t)
   }, [queryInput])
+
+  // список пуст — сразу узнаём, сколько заметок в облаке, чтобы показать
+  // понятную подсказку вместо «просто пусто»
+  useEffect(() => {
+    if (account && cloudEnabled && notes.length === 0) refreshCloudCount()
+  }, [account, notes.length])
 
   const active = useMemo(() => notes.find((n) => n.id === activeId) || null, [notes, activeId])
 
@@ -684,6 +694,38 @@ export default function App() {
     setAuthNotice('')
   }
 
+  const refreshCloudCount = async () => {
+    if (!cloudEnabled) return
+    try {
+      setCloudNotes(await cloudNoteCount())
+    } catch {
+      setCloudNotes(null)
+    }
+  }
+
+  // «Отправить всё в облако»: принудительно, даже если кажется, что уже отправлено
+  const onPushAll = async () => {
+    if (!cloudEnabled) {
+      setSyncMsg('Облако не настроено: впиши ключи в public/config.js')
+      return
+    }
+    setPushingAll(true)
+    setSyncMsg('Отправляю всё в облако…')
+    try {
+      const r = await pushEverything()
+      setSyncMsg(r.ok ? 'Отправлено в облако. Открой другие устройства и нажми «Синк».' : `Не вышло: ${r.reason}`)
+      if (r.ok) {
+        await refresh()
+        markSynced()
+      }
+      await refreshCloudCount()
+    } catch (e) {
+      setSyncMsg(`Не вышло: ${e.message}`)
+    } finally {
+      setPushingAll(false)
+    }
+  }
+
   const doSync = async () => {
     if (syncing.current) {
       setSyncMsg('Синк уже идёт, подожди…')
@@ -707,6 +749,7 @@ export default function App() {
         await refresh()
         markSynced()
       }
+      await refreshCloudCount()
     } finally {
       syncing.current = false
     }
@@ -1193,6 +1236,14 @@ export default function App() {
         >
           {cloudEnabled ? 'Синк' : 'Локально'}
         </button>
+        {cloudEnabled && cloudNotes !== null && (
+          <span
+            className="text-[11px] opacity-50 hidden sm:inline"
+            title="Сколько заметок лежит в облаке у этого аккаунта"
+          >
+            · облако: {cloudNotes}
+          </span>
+        )}
         {cloudEnabled && lastSyncAt && (
           <span className="text-[11px] opacity-50 hidden sm:inline" title="Последний успешный синк">
             · {lastSyncAt}
@@ -1354,11 +1405,42 @@ export default function App() {
                     Показать ещё · осталось {otherList.length - listLimit}
                   </button>
                 )}
-                {shownList.length === 0 && (
-                  <div className="text-sm opacity-50 p-2">
-                    {query.trim() ? `По запросу «${query.trim()}» ничего не найдено.` : 'Нет заметок. Включи измерения или создай новую.'}
-                  </div>
-                )}
+                {shownList.length === 0 &&
+                  (query.trim() ? (
+                    <div className="text-sm opacity-50 p-2">По запросу «{query.trim()}» ничего не найдено.</div>
+                  ) : (
+                    <div className="panel rounded p-3 text-sm">
+                      <div className="mb-2 font-semibold">Заметок нет</div>
+                      {cloudEnabled ? (
+                        <div className="opacity-70 mb-3">
+                          {cloudNotes === null
+                            ? 'Проверяю облако…'
+                            : cloudNotes === 0
+                              ? 'В облаке тоже пусто. Если заметки есть на другом устройстве — открой его, войди в тот же аккаунт и нажми «Синк» (или «Отправить всё в облако»).'
+                              : `В облаке ${cloudNotes} заметок — нажми «Синк», чтобы подтянуть их сюда.`}
+                        </div>
+                      ) : (
+                        <div className="opacity-70 mb-3">
+                          Данные хранятся на этом устройстве. Облако не настроено, поэтому синка нет.
+                        </div>
+                      )}
+                      <div className="flex gap-2 flex-wrap">
+                        {cloudEnabled && (
+                          <button className="chip" onClick={doSync}>
+                            Синк
+                          </button>
+                        )}
+                        {cloudEnabled && (
+                          <button className="chip" onClick={onPushAll} disabled={pushingAll}>
+                            {pushingAll ? 'Отправляю…' : 'Отправить всё в облако'}
+                          </button>
+                        )}
+                        <button className="chip" onClick={() => createNew('text')}>
+                          + Заметка
+                        </button>
+                      </div>
+                    </div>
+                  ))}
               </>
             )}
           </div>
