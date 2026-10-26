@@ -42,14 +42,60 @@ export function cloud() {
 // Синк работает только под своим аккаунтом: anon-ключ публичен по определению,
 // и без входа любой, кто откроет сайт, увидел бы те же данные.
 
+// За сколько до конца жизни токена обновляем сессию заранее
+const REFRESH_AHEAD_MS = 60 * 1000
+
+async function forceRefresh(sb) {
+  try {
+    const { data, error } = await sb.auth.refreshSession()
+    if (error || !data?.session) return null
+    return data.session
+  } catch {
+    return null
+  }
+}
+
+// Сессия входа в облако.
+//
+// ВАЖНО: токен доступа живёт час, а планшет может неделю пролежать
+// с закрытой вкладкой. Если синк пойдёт с протухшим токеном, запрос уйдёт
+// на сервер без прав (роль anon, у неё в schema.sql всё отозвано) и человек
+// увидит «permission denied for table dimensions» вместо «войди заново».
+// Поэтому перед синком сессию обновляем, не дожидаясь отказа.
 export async function authSession() {
   const sb = cloud()
   if (!sb) return null
   try {
     const { data } = await sb.auth.getSession()
-    return data?.session || null
+    const s = data?.session || null
+    if (!s) return null
+    const exp = Number(s.expires_at)
+    if (Number.isFinite(exp) && exp * 1000 - Date.now() < REFRESH_AHEAD_MS) {
+      // обновить не вышло (нет сети / refresh-токен отозван) — отдаём старую:
+      // синк честно отвалится, а syncNow уже разберётся, что сказать человеку
+      return (await forceRefresh(sb)) || s
+    }
+    return s
   } catch {
     return null
+  }
+}
+
+// Ошибка «нет прав на таблицу» от Postgres/Supabase означает одно из двух:
+// запрос ушёл анонимом (сессия протухла) или в базе не выполнен schema.sql.
+// В обоих случаях это не «нет данных», а проблема доступа — говорим по-человечески.
+export function isAuthProblem(err) {
+  const t = `${err?.code || ''} ${err?.message || err || ''}`
+  return /permission denied|42501|PGRST301|JWT|invalid claim|not authenticated|row-level security/i.test(t)
+}
+
+// Сбрасываем только локальную сессию: данные в облаке и заметки на устройстве
+// остаются, человек просто входит заново.
+async function dropSession(sb) {
+  try {
+    await sb.auth.signOut({ scope: 'local' })
+  } catch {
+    /* уже вышли */
   }
 }
 
@@ -339,15 +385,23 @@ async function pullNotes(sb) {
 
 // Измерения: upsert по id. Вызывается ПЕРВЫМ — заметки ссылаются на dimensions по FK.
 async function pushDimensions(sb) {
-  const dims = await db.dimensions.toArray()
-  if (!dims.length) return
-  const { error } = await sb
-    .from('dimensions')
-    .upsert(
-      dims.map((d) => ({ id: d.id, name: d.name, color: d.color })),
-      { onConflict: 'id' }
-    )
-  if (error) throw new Error(`dimensions: ${error.message}`)
+  // Три измерения общие и уже созданы schema.sql. Если записать их не дали
+  // (протухший вход, урезанные права), из-за этой служебной таблицы нельзя
+  // ронять весь синк и показывать «dimensions: permission denied» — пишем
+  // в журнал и идём дальше: заметки сами скажут, если дело в доступе.
+  try {
+    const dims = await db.dimensions.toArray()
+    if (!dims.length) return
+    const { error } = await sb
+      .from('dimensions')
+      .upsert(
+        dims.map((d) => ({ id: d.id, name: d.name, color: d.color })),
+        { onConflict: 'id' }
+      )
+    if (error) throw error
+  } catch (e) {
+    await logSync(`dimensions skip: ${String(e.message || e).slice(0, 100)}`)
+  }
 }
 
 // Подчистка измерений в облаке. ВАЖНО: вызывается ПОСЛЕ pushNotes, потому что
@@ -545,28 +599,59 @@ async function pullEvents(sb) {
   }
 }
 
+async function runSync(sb, opts) {
+  await pushDimensions(sb)
+  await pushNotes(sb)
+  await pushEvents(sb)
+  // подчистка лишних измерений в облаке — после пуша заметок (иначе FK)
+  await pruneCloudDimensions(sb)
+  const pulled = await pullNotes(sb)
+  const rest = await pullRest(sb)
+  const pulledEvents = await pullEvents(sb)
+  await pushRest(sb)
+  await setSetting('lastSync', new Date().toISOString())
+  // тихие фоновые синки пишут итог только если что-то реально приехало/уехало
+  if (!opts.quiet || pulled || rest.links || rest.chunks || pulledEvents) {
+    await logSync(`ok pulled=${pulled} links=${rest.links} chunks=${rest.chunks} events=${pulledEvents}`)
+  }
+  return { ok: true, pulled, pulledLinks: rest.links, pulledChunks: rest.chunks, pulledEvents }
+}
+
+const EXPIRED_AUTH =
+  'Вход в облако протух — войди заново. Заметки на устройстве на месте, ничего не потеряно.'
+
 export async function syncNow(opts = {}) {
   const sb = cloud()
   if (!sb) return { ok: false, reason: 'Нет VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY (.env)' }
+  // без сети не трогаем сессию: офлайн — это не «вход протух»
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return { ok: false, reason: 'Нет сети — изменения сохранены на устройстве, синкну позже' }
+  }
   const session = await authSession()
-  if (!session) return { ok: false, reason: 'Нужен вход в аккаунт' }
+  if (!session) return { ok: false, needLogin: true, reason: 'Нужен вход в аккаунт' }
   try {
-    await pushDimensions(sb)
-    await pushNotes(sb)
-    await pushEvents(sb)
-    // подчистка лишних измерений в облаке — после пуша заметок (иначе FK)
-    await pruneCloudDimensions(sb)
-    const pulled = await pullNotes(sb)
-    const rest = await pullRest(sb)
-    const pulledEvents = await pullEvents(sb)
-    await pushRest(sb)
-    await setSetting('lastSync', new Date().toISOString())
-    // тихие фоновые синки пишут итог только если что-то реально приехало/уехало
-    if (!opts.quiet || pulled || rest.links || rest.chunks || pulledEvents) {
-      await logSync(`ok pulled=${pulled} links=${rest.links} chunks=${rest.chunks} events=${pulledEvents}`)
-    }
-    return { ok: true, pulled, pulledLinks: rest.links, pulledChunks: rest.chunks, pulledEvents }
+    return await runSync(sb, opts)
   } catch (e) {
+    // Запрос ушёл анонимом (токен протух между проверкой и отправкой):
+    // один раз обновляем сессию и повторяем синк, прежде чем просить войти.
+    if (isAuthProblem(e) && (await forceRefresh(sb))) {
+      try {
+        const r = await runSync(sb, opts)
+        await logSync('вход обновлён, синк повторён')
+        return r
+      } catch (e2) {
+        if (!isAuthProblem(e2)) {
+          await logSync(`FAIL ${String(e2.message || e2).slice(0, 140)}`)
+          return { ok: false, reason: String(e2.message || e2) }
+        }
+        e = e2
+      }
+    }
+    if (isAuthProblem(e)) {
+      await dropSession(sb)
+      await logSync(`FAIL auth: ${String(e.message || e).slice(0, 140)}`)
+      return { ok: false, needLogin: true, reason: EXPIRED_AUTH }
+    }
     await logSync(`FAIL ${String(e.message || e).slice(0, 140)}`)
     return { ok: false, reason: String(e.message || e) }
   }

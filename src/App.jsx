@@ -252,6 +252,8 @@ export default function App() {
       try {
         const r = await syncNow({ quiet: true })
         if (r.ok) await refresh()
+        // тихо: не выкидываем человека из редактора, но причину показываем
+        else if (r.needLogin) setSyncMsg(r.reason)
       } finally {
         syncing.current = false
       }
@@ -308,6 +310,11 @@ export default function App() {
           await normalizeDimensions()
           await refresh()
           markSynced()
+        } else if (r.needLogin) {
+          // вход протух: показываем форму входа, а не сырую ошибку базы
+          setSyncMsg(r.reason)
+          offerLogin(r.reason)
+          return
         }
       }
     }
@@ -424,6 +431,8 @@ export default function App() {
       if (r.ok) {
         await refresh()
         markSynced()
+      } else if (r.needLogin) {
+        setSyncMsg(r.reason)
       }
     } finally {
       syncing.current = false
@@ -665,6 +674,16 @@ export default function App() {
 
   // ---------- синк ----------
 
+  // Вход в облако протух (токен не обновился): показываем форму входа.
+  // Заметки при этом остаются в базе на устройстве — ничего не теряется.
+  const offerLogin = (notice) => {
+    setAccount(null)
+    setAuthChecked(true)
+    setAuthMode('in')
+    setAuthError(notice || '')
+    setAuthNotice('')
+  }
+
   const doSync = async () => {
     if (syncing.current) {
       setSyncMsg('Синк уже идёт, подожди…')
@@ -674,6 +693,11 @@ export default function App() {
     setSyncMsg('Синк…')
     try {
       const r = await syncNow()
+      if (r.needLogin) {
+        setSyncMsg(r.reason)
+        offerLogin(r.reason)
+        return
+      }
       setSyncMsg(
         r.ok
           ? `Ок: заметок ${r.pulled}, чанков ${r.pulledChunks || 0}, событий ${r.pulledEvents || 0}`
