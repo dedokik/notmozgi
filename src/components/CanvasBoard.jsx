@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-// Интерактивная доска заметки: маркер, ластик, прямоугольники, стрелки, текст.
+// Интерактивная доска заметки: маркер, ластик, блоки, стрелки, текст,
+// перемещение объектов, блок с текстом заметки и вставка из буфера (Ctrl+V).
 // Данные — обычный JSON (canvas_data), он же уезжает в Supabase и в Dexie.
 //
 // Почему свой холст, а не tldraw: tldraw тянет ~1 МБ JS и требует лицензию
@@ -13,6 +14,15 @@ export const CANVAS_WIDTHS = [2, 4, 8, 14]
 const MIN_ZOOM = 0.25
 const MAX_ZOOM = 4
 const GRID = 24
+
+// карточка с текстом: свёрнутая показывает пару строк, развёрнутая — весь текст
+const NOTE_W = 300
+const NOTE_H = 108
+const NOTE_H_OPEN = 460
+const TEXT_W = 280
+const TEXT_H = 108
+
+const isBlock = (el) => el && (el.type === 'note' || el.type === 'textbox')
 
 export function emptyCanvas() {
   return { version: 1, elements: [] }
@@ -58,6 +68,14 @@ function hitTest(el, p, tol) {
   if (el.type === 'arrow') {
     return distToSegment(p, { x: el.x1, y: el.y1 }, { x: el.x2, y: el.y2 }) < tol + (el.width || 2)
   }
+  if (el.type === 'note' || el.type === 'textbox') {
+    return (
+      p.x >= el.x - tol &&
+      p.x <= el.x + (el.w || NOTE_W) + tol &&
+      p.y >= el.y - tol &&
+      p.y <= el.y + (el.h || NOTE_H) + tol
+    )
+  }
   if (el.type === 'text') {
     const size = el.size || 20
     const w = (el.text || '').length * size * 0.56
@@ -66,7 +84,15 @@ function hitTest(el, p, tol) {
   return false
 }
 
-export default function CanvasBoard({ value, onChange }) {
+// Перенос элемента на dx/dy: у штриха двигаем все точки, у стрелки — оба конца
+function moveEl(el, dx, dy) {
+  if (el.type === 'path') return { ...el, points: (el.points || []).map(([x, y]) => [x + dx, y + dy]) }
+  if (el.type === 'arrow')
+    return { ...el, x1: el.x1 + dx, y1: el.y1 + dy, x2: el.x2 + dx, y2: el.y2 + dy }
+  return { ...el, x: (el.x || 0) + dx, y: (el.y || 0) + dy }
+}
+
+export default function CanvasBoard({ value, onChange, noteText = '' }) {
   const [doc, setDoc] = useState(() => normalizeDoc(value))
   const [tool, setTool] = useState('pen')
   const [color, setColor] = useState(CANVAS_COLORS[1])
@@ -93,24 +119,36 @@ export default function CanvasBoard({ value, onChange }) {
   docRef.current = doc
 
   const gesture = useRef(null)
+  // последняя точка курсора в мировых координатах — туда вставляем из буфера
+  const lastWorld = useRef(null)
   const pointers = useRef(new Map())
   const pinch = useRef(null)
   const past = useRef([])
   const future = useRef([])
 
-  const commit = useCallback(
-    (next, history = true) => {
-      if (history) {
-        past.current.push(docRef.current)
-        if (past.current.length > 80) past.current.shift()
-        future.current = []
-      }
+  // снимок для undo (без него перетаскивание заполняло бы историю на каждый пиксель)
+  const pushHistory = useCallback(() => {
+    past.current.push(docRef.current)
+    if (past.current.length > 80) past.current.shift()
+    future.current = []
+  }, [])
+
+  const applyDoc = useCallback(
+    (next) => {
       docRef.current = next
       setDoc(next)
       setHistTick((t) => t + 1)
       onChange?.(next)
     },
     [onChange]
+  )
+
+  const commit = useCallback(
+    (next, history = true) => {
+      if (history) pushHistory()
+      applyDoc(next)
+    },
+    [applyDoc, pushHistory]
   )
 
   const undo = () => {
@@ -161,12 +199,79 @@ export default function CanvasBoard({ value, onChange }) {
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
+  // верхний элемент под точкой (последний нарисованный — сверху)
+  const topmostAt = (p, tol = 8 / view.zoom + 4) => {
+    const els = docRef.current.elements
+    for (let i = els.length - 1; i >= 0; i--) if (hitTest(els[i], p, tol)) return els[i]
+    return null
+  }
+
+  const toggleBlock = (id) => {
+    const el = docRef.current.elements.find((e) => e.id === id)
+    if (!isBlock(el)) return
+    pushHistory()
+    const expanded = el.expanded ? 0 : 1
+    applyDoc({
+      ...docRef.current,
+      elements: docRef.current.elements.map((e) =>
+        e.id === id ? { ...e, expanded, h: expanded ? NOTE_H_OPEN : e.type === 'note' ? NOTE_H : TEXT_H } : e
+      ),
+    })
+  }
+
+  // новый блок: 'note' — живой текст заметки, 'textbox' — вставленный текст
+  const addBlock = (type, text, at) => {
+    const p = at || lastWorld.current || { x: 80, y: 80 }
+    const el =
+      type === 'note'
+        ? { id: uid(), type: 'note', x: p.x, y: p.y, w: NOTE_W, h: NOTE_H, expanded: 0 }
+        : { id: uid(), type: 'textbox', x: p.x, y: p.y, w: TEXT_W, h: TEXT_H, expanded: 0, text: text || '' }
+    commit({ ...docRef.current, elements: [...docRef.current.elements, el], hideNote: docRef.current.hideNote })
+  }
+
+  // Ctrl+V на доске: вставленный текст становится отдельным блоком
+  const addBlockRef = useRef(null)
+  addBlockRef.current = addBlock
+  useEffect(() => {
+    const onPaste = (e) => {
+      const ae = typeof document !== 'undefined' ? document.activeElement : null
+      if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return
+      const text = e.clipboardData?.getData('text/plain')
+      if (!text || !text.trim()) return
+      e.preventDefault()
+      addBlockRef.current?.('textbox', text.trim(), lastWorld.current)
+    }
+    document.addEventListener('paste', onPaste)
+    return () => document.removeEventListener('paste', onPaste)
+  }, [])
+
+  // блок с текстом заметки появляется на доске сам (один раз), пока его не стёрли
+  useEffect(() => {
+    const d = docRef.current
+    if (!noteText || !noteText.trim()) return
+    if (d.hideNote) return
+    if (d.elements.some((e) => e.type === 'note')) return
+    applyDoc({
+      ...d,
+      elements: [{ id: uid(), type: 'note', x: 40, y: 40, w: NOTE_W, h: NOTE_H, expanded: 0 }, ...d.elements],
+    })
+  }, [noteText, applyDoc])
+
   const eraseAt = (p) => {
     const tol = 10 / view.zoom + 4
     const els = docRef.current.elements
     for (let i = els.length - 1; i >= 0; i--) {
       if (hitTest(els[i], p, tol)) {
-        commit({ ...docRef.current, elements: els.filter((_, idx) => idx !== i) }, false)
+        const removed = els[i]
+        commit(
+          {
+            ...docRef.current,
+            elements: els.filter((_, idx) => idx !== i),
+            // стёрла блок с текстом заметки — значит он не нужен, не возвращаем
+            hideNote: removed.type === 'note' ? true : docRef.current.hideNote,
+          },
+          false
+        )
         return
       }
     }
@@ -222,6 +327,19 @@ export default function CanvasBoard({ value, onChange }) {
     if (textEdit) commitText()
 
     const p = toWorld(e.clientX, e.clientY)
+    lastWorld.current = p
+
+    if (tool === 'move') {
+      const hit = topmostAt(p)
+      if (hit) {
+        // снимок один раз на жест: undo вернёт элемент на место целиком
+        pushHistory()
+        gesture.current = { type: 'drag', id: hit.id, start: p, orig: { ...hit }, moved: 0 }
+      } else {
+        gesture.current = { type: 'pan', origin: { x: e.clientX, y: e.clientY }, view0: { ...view } }
+      }
+      return
+    }
 
     if (tool === 'text') {
       startText(p, e.clientX, e.clientY)
@@ -282,6 +400,18 @@ export default function CanvasBoard({ value, onChange }) {
     }
 
     const p = toWorld(e.clientX, e.clientY)
+    lastWorld.current = p
+
+    if (g.type === 'drag') {
+      const dx = p.x - g.start.x
+      const dy = p.y - g.start.y
+      g.moved = Math.max(g.moved, Math.hypot(dx, dy))
+      applyDoc({
+        ...docRef.current,
+        elements: docRef.current.elements.map((el) => (el.id === g.id ? moveEl(g.orig, dx, dy) : el)),
+      })
+      return
+    }
 
     if (g.type === 'pen') {
       let evs = [e]
@@ -330,6 +460,12 @@ export default function CanvasBoard({ value, onChange }) {
     const el = previewRef.current
     if (!g) return
 
+    if (g.type === 'drag') {
+      // не сдвинула, а просто ткнула — развернуть/свернуть блок
+      if (g.moved < 4) toggleBlock(g.id)
+      return
+    }
+
     if (g.type === 'pen' && el && el.points && el.points.length > 1) {
       commit({ ...docRef.current, elements: [...docRef.current.elements, el] })
     } else if (g.type === 'rect' && el && el.w > 3 && el.h > 3) {
@@ -365,6 +501,9 @@ export default function CanvasBoard({ value, onChange }) {
       } else if (el.type === 'arrow') {
         acc(el.x1, el.y1)
         acc(el.x2, el.y2)
+      } else if (isBlock(el)) {
+        acc(el.x, el.y)
+        acc(el.x + (el.w || NOTE_W), el.y + (el.h || NOTE_H))
       } else if (el.type === 'text') {
         acc(el.x, el.y - (el.size || 20))
         acc(el.x + (el.text || '').length * (el.size || 20) * 0.56, el.y + 6)
@@ -395,7 +534,7 @@ export default function CanvasBoard({ value, onChange }) {
   const clearAll = () => {
     if (!docRef.current.elements.length) return
     if (!window.confirm('Очистить холст? Отменить можно кнопкой ↶.')) return
-    commit({ ...docRef.current, elements: [] })
+    commit({ ...docRef.current, elements: [], hideNote: true })
   }
 
   const renderEl = (el) => {
@@ -450,6 +589,34 @@ export default function CanvasBoard({ value, onChange }) {
         </g>
       )
     }
+    if (isBlock(el)) {
+      const text = el.type === 'note' ? noteText || '' : el.text || ''
+      return (
+        <foreignObject key={el.id} x={el.x} y={el.y} width={el.w || NOTE_W} height={el.h || NOTE_H}>
+          <div
+            xmlns="http://www.w3.org/1999/xhtml"
+            className={`cb-block ${el.expanded ? 'is-open' : ''} ${el.type === 'note' ? 'is-note' : ''}`}
+          >
+            <div className="cb-block-head">
+              <span className="cb-block-title">{el.type === 'note' ? 'Текст заметки' : 'Вставленный текст'}</span>
+              <button
+                type="button"
+                className="cb-block-btn"
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  toggleBlock(el.id)
+                }}
+                title={el.expanded ? 'Свернуть' : 'Развернуть'}
+              >
+                {el.expanded ? '▾' : '▸'}
+              </button>
+            </div>
+            <div className="cb-block-body">{text.trim() ? text : 'Пусто — напиши текст заметки'}</div>
+          </div>
+        </foreignObject>
+      )
+    }
     if (el.type === 'text') {
       return (
         <text
@@ -471,6 +638,7 @@ export default function CanvasBoard({ value, onChange }) {
     () => [
       { id: 'pen', label: '✏️', title: 'Маркер' },
       { id: 'eraser', label: '🧽', title: 'Ластик' },
+      { id: 'move', label: '↖', title: 'Двигать объекты (тап по блоку — развернуть)' },
       { id: 'rect', label: '▭', title: 'Блок' },
       { id: 'arrow', label: '➜', title: 'Стрелка' },
       { id: 'text', label: 'T', title: 'Текст' },
@@ -497,6 +665,15 @@ export default function CanvasBoard({ value, onChange }) {
             {t.label}
           </button>
         ))}
+
+        <button
+          type="button"
+          className="cb-tool"
+          onClick={() => addBlock('note', '', lastWorld.current)}
+          title="Блок с текстом заметки"
+        >
+          📄
+        </button>
 
         <span className="cb-sep" />
 
@@ -553,7 +730,9 @@ export default function CanvasBoard({ value, onChange }) {
       <svg
         ref={svgRef}
         className="cb-svg"
-        style={{ cursor: tool === 'hand' ? 'grab' : tool === 'text' ? 'text' : 'crosshair' }}
+        style={{
+          cursor: tool === 'hand' || tool === 'move' ? 'grab' : tool === 'text' ? 'text' : 'crosshair',
+        }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={finish}
@@ -596,7 +775,8 @@ export default function CanvasBoard({ value, onChange }) {
 
       {!doc.elements.length && !textEdit && (
         <div className="cb-hint">
-          Рисуй стилусом: маркер, блоки, стрелки. Двумя пальцами — масштаб, «✋» — двигать холст.
+          Рисуй стилусом: маркер, блоки, стрелки. «↖» — двигать объекты, тап по блоку с текстом
+          разворачивает его. Ctrl+V вставляет текст отдельным блоком.
         </div>
       )}
 

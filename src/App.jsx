@@ -150,7 +150,7 @@ export default function App() {
   )
 
   // --- планшет/стилус ---
-  const [hwMode, setHwMode] = useState(false)
+  const [canvasTextOpen, setCanvasTextOpen] = useState(false)
   const [drawMode, setDrawMode] = useState(false)
   const [graphDim, setGraphDim] = useState('all') // 'all' или id измерения
   const [graphPos, setGraphPos] = useState({}) // { [scope]: { 'note:1': [x, y] } }
@@ -522,7 +522,7 @@ export default function App() {
     }
     const raf = requestAnimationFrame(apply)
     return () => cancelAnimationFrame(raf)
-  }, [draft?.body, draft?.id, hwMode, preview, drawMode])
+  }, [draft?.body, draft?.id, preview, drawMode])
 
   // сколько пикселей занимает текст до позиции idx (с учётом переносов строк):
   // меряем скрытым div с теми же стилями, что у textarea
@@ -1526,25 +1526,44 @@ export default function App() {
                 </div>
 
                 {draft.note_type === 'canvas' ? (
-                  <CanvasBoard
-                    key={draft.id}
-                    value={draft.canvas_data}
-                    onChange={(next) => setDraft((d) => (d ? { ...d, canvas_data: next } : d))}
-                  />
+                  <>
+                    <div className="flex items-center gap-2 mb-2 flex-wrap">
+                      <button
+                        onClick={() => setCanvasTextOpen((v) => !v)}
+                        className="chip"
+                        style={canvasTextOpen ? { borderColor: 'var(--accent)', fontWeight: 700 } : {}}
+                        title="Текст заметки: он же показывается блоком на доске"
+                      >
+                        📝 Текст заметки
+                      </button>
+                      <button onClick={saveNow} className="px-4 py-2 rounded accent-bg text-black font-semibold text-sm">
+                        Сохранить
+                      </button>
+                      <span className="text-xs opacity-50">
+                        Блок с текстом на доске можно двигать («↖») и разворачивать (тап по нему)
+                      </span>
+                    </div>
+
+                    {canvasTextOpen && (
+                      <textarea
+                        value={draft.body}
+                        onChange={(e) => handleBodyChange(e.target.value)}
+                        rows={8}
+                        className="w-full rounded p-3 font-mono text-sm mb-2"
+                        placeholder="Текст заметки — он появится на доске блоком"
+                      />
+                    )}
+
+                    <CanvasBoard
+                      key={draft.id}
+                      value={draft.canvas_data}
+                      noteText={draft.body}
+                      onChange={(next) => setDraft((d) => (d ? { ...d, canvas_data: next } : d))}
+                    />
+                  </>
                 ) : (
                   <>
                     <div className="flex items-center gap-2 mb-3 flex-wrap">
-                      <button
-                        onClick={() => {
-                          setHwMode((v) => !v)
-                          setPreview(false)
-                        }}
-                        className="chip"
-                        style={hwMode ? { borderColor: 'var(--accent)', fontWeight: 700 } : {}}
-                        title="Рукописный режим: крупный текст, удобно писать стилусом"
-                      >
-                        ✍ Рукопись
-                      </button>
                       <button
                         onClick={() => {
                           setDrawMode((v) => !v)
@@ -1582,13 +1601,9 @@ export default function App() {
                           value={draft.body}
                           onChange={(e) => handleBodyChange(e.target.value)}
                           readOnly={drawMode}
-                          rows={hwMode ? 20 : 12}
-                          className={`draw-page-text w-full rounded p-3 font-mono text-sm ${hwMode ? 'hw-textarea' : ''}`}
-                          placeholder={
-                            hwMode
-                              ? 'Пиши стилусом — текст распознается и попадает в заметку'
-                              : '# Заголовок\n\n- [ ] задача\n\nСвязь: [[Другая заметка]]\n\nдедлайн: 30.09'
-                          }
+                          rows={12}
+                          className="draw-page-text w-full rounded p-3 font-mono text-sm"
+                          placeholder={'# Заголовок\n\n- [ ] задача\n\nСвязь: [[Другая заметка]]\n\nдедлайн: 30.09'}
                         />
                         <DrawLayer
                           ref={drawRef}
